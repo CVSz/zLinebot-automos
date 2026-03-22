@@ -16,3 +16,9 @@ bash scripts/deploy.sh
 ```
 
 Then open `https://zeaz.yourdomain.com`.
+
+## Landing + Funnel endpoints
+- `POST /api/register` → create free-trial token
+- `POST /api/chat` → AI demo proxy endpoint (requires `Authorization` header)
+- `GET /api/checkout?price_id=...` → Stripe Checkout redirect
+- `GET /api/create-checkout` → legacy redirect to `/api/checkout`

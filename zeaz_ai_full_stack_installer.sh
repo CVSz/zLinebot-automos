@@ -44,7 +44,7 @@ systemctl start docker
 
 log "[3/8] Generate project files"
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR"/{api,worker,infra,panels/{admin,user,devops},backup,monitor,logs,db,certs}
+mkdir -p "$APP_DIR"/{api,worker,analytics,infra,panels/{admin,user,devops},backup,monitor,logs,db,certs}
 
 DB_PASS="$(openssl rand -hex 32)"
 REDIS_PASS="$(openssl rand -hex 32)"
@@ -89,6 +89,10 @@ KAFKA_PASSWORD=${KAFKA_PASS}
 CORS_ORIGINS=https://${DOMAIN}
 OPENAI_API_KEY=REPLACE
 OPENAI_MODEL=gpt-4.1-mini
+QDRANT_HOST=qdrant
+QDRANT_PORT=6333
+MEMORY_MODEL=all-MiniLM-L6-v2
+API_HMAC_SECRET=$(openssl rand -hex 48)
 STRIPE_SECRET=REPLACE
 ENVFILE
 chmod 600 "$APP_DIR/api/api.env"
@@ -182,6 +186,21 @@ CREATE TABLE IF NOT EXISTS api_keys (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS subscriptions (
+  user_id TEXT PRIMARY KEY,
+  plan TEXT NOT NULL DEFAULT 'free',
+  status TEXT NOT NULL DEFAULT 'active',
+  expires_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS apps (
+  id SERIAL PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  owner TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 INSERT INTO users(username,password,role)
 VALUES('admin', crypt('${ADMIN_PASS}', gen_salt('bf', 12)), 'admin')
 ON CONFLICT (username) DO NOTHING;
@@ -200,6 +219,9 @@ openai==1.14.0
 pydantic==2.6.4
 backoff==2.2.1
 stripe==9.2.0
+qdrant-client==1.9.0
+sentence-transformers==2.7.0
+httpx==0.27.0
 REQ
 
 cat > "$APP_DIR/api/Dockerfile" <<'DOCKER'
@@ -218,10 +240,13 @@ import os
 import time
 import json
 import uuid
+import hmac
+import hashlib
 from threading import Lock
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Security
+import httpx
+from fastapi import FastAPI, HTTPException, Depends, Header, Security, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -232,12 +257,20 @@ from passlib.context import CryptContext
 from kafka import KafkaProducer
 from redis import Redis
 from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
+from sentence_transformers import SentenceTransformer
 import stripe
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 AI_ENABLED = OPENAI_API_KEY not in {"", "REPLACE"}
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+MEMORY_MODEL = os.getenv("MEMORY_MODEL", "all-MiniLM-L6-v2")
+MEMORY_COLLECTION = "memory"
+API_HMAC_SECRET = os.getenv("API_HMAC_SECRET", "")
 JWT_PRIMARY = os.getenv("JWT_SECRET_CURRENT") or os.getenv("JWT_SECRET", "")
 JWT_FALLBACK = [k for k in os.getenv("JWT_SECRET_PREVIOUS", "").split(",") if k]
 JWT_KEYS = [JWT_PRIMARY, *JWT_FALLBACK]
@@ -265,6 +298,8 @@ producer = KafkaProducer(
     sasl_plain_password=os.getenv("KAFKA_PASSWORD"),
 )
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if AI_ENABLED else None
+qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+memory_model = SentenceTransformer(MEMORY_MODEL)
 if STRIPE_SECRET and STRIPE_SECRET != "REPLACE":
     stripe.api_key = STRIPE_SECRET
 
@@ -289,6 +324,38 @@ def wait_for_db(max_attempts: int = 10, sleep_seconds: int = 3) -> None:
 
 
 wait_for_db()
+
+
+def ensure_memory_collection() -> None:
+    existing = [c.name for c in qdrant.get_collections().collections]
+    if MEMORY_COLLECTION in existing:
+        return
+    qdrant.create_collection(
+        collection_name=MEMORY_COLLECTION,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
+
+
+def encode_text(text: str) -> list[float]:
+    return memory_model.encode(text).tolist()
+
+
+def store_memory(user: str, text_value: str):
+    ensure_memory_collection()
+    payload = {"user": user, "text": text_value}
+    point = PointStruct(id=str(uuid.uuid4()), vector=encode_text(text_value), payload=payload)
+    qdrant.upsert(collection_name=MEMORY_COLLECTION, points=[point])
+
+
+def recall_memory(user: str, query: str, limit: int = 5) -> list[str]:
+    ensure_memory_collection()
+    hits = qdrant.search(
+        collection_name=MEMORY_COLLECTION,
+        query_vector=encode_text(query),
+        query_filter={"must": [{"key": "user", "match": {"value": user}}]},
+        limit=limit,
+    )
+    return [h.payload.get("text", "") for h in hits if h.payload and h.payload.get("text")]
 
 class CircuitBreaker:
     def __init__(self, threshold=5):
@@ -331,6 +398,35 @@ class CheckoutIn(BaseModel):
     price_cents: int = Field(default=1000, ge=100, le=1000000)
     success_url: str = Field(min_length=8, max_length=500)
     cancel_url: str = Field(min_length=8, max_length=500)
+
+class AgentTaskIn(BaseModel):
+    task: str = Field(min_length=3, max_length=500)
+
+
+def check_plan(user: str) -> str:
+    with DB.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT plan FROM subscriptions
+                WHERE user_id=:u AND status='active'
+                AND (expires_at IS NULL OR expires_at > NOW())
+                """
+            ),
+            {"u": user},
+        ).fetchone()
+    return row[0] if row else "free"
+
+
+def verify_hmac_signature(request: Request, body_bytes: bytes, x_timestamp: str, x_signature: str):
+    if not API_HMAC_SECRET:
+        return
+    if not x_timestamp or not x_signature:
+        raise HTTPException(401, "missing_signature")
+    signed = f"{x_timestamp}.{body_bytes.decode('utf-8', errors='ignore')}".encode()
+    expected = hmac.new(API_HMAC_SECRET.encode(), signed, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, x_signature):
+        raise HTTPException(401, "invalid_signature")
 
 
 def issue_access_token(username: str, role: str) -> str:
@@ -529,11 +625,26 @@ def logout_all(claims=Depends(authz)):
 
 
 @app.post("/chat")
-def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")):
+async def chat(
+    req: ChatIn,
+    request: Request,
+    claims=Depends(authz),
+    x_api_key: str = Header(default=""),
+    x_signature: str = Header(default=""),
+    x_timestamp: str = Header(default=""),
+):
     check_rate_limit(claims["sub"])
+    verify_hmac_signature(request, await request.body(), x_timestamp, x_signature)
     owner = validate_api_key(x_api_key)
+    plan = check_plan(claims["sub"])
+    if plan == "free":
+        raise HTTPException(402, "upgrade_required")
     tenant_id = ensure_tenant(claims["sub"])
-    reply = cb.call(noop_ai, req.message)
+    memories = recall_memory(claims["sub"], req.message)
+    context = "\n".join(memories)
+    prompt = req.message if not context else f"Context:\n{context}\n\nUser request:\n{req.message}"
+    reply = cb.call(noop_ai, prompt)
+    store_memory(claims["sub"], req.message)
     try:
         producer.send(
             "events.messages",
@@ -543,7 +654,35 @@ def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")
     except Exception:
         write_audit("kafka_failed", username=claims["sub"], details={"event": "events.messages"})
     write_audit("chat_used", username=claims["sub"], details={"message_len": len(req.message), "api_key_owner": owner})
-    return {"reply": reply, "x_api_key_seen": bool(x_api_key), "api_key_owner": owner}
+    return {
+        "reply": reply,
+        "x_api_key_seen": bool(x_api_key),
+        "api_key_owner": owner,
+        "plan": plan,
+        "memory_hits": len(memories),
+    }
+
+
+@app.get("/market/{app_name}")
+def call_market_app(app_name: str, claims=Depends(authz)):
+    with DB.begin() as conn:
+        row = conn.execute(
+            text("SELECT endpoint, owner FROM apps WHERE name=:n"),
+            {"n": app_name},
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "app_not_found")
+    endpoint, owner = row[0], row[1]
+    try:
+        response = httpx.get(endpoint, timeout=10)
+        return {
+            "app": app_name,
+            "owner": owner,
+            "status_code": response.status_code,
+            "response": response.text[:2000],
+        }
+    except Exception:
+        raise HTTPException(502, "app_unreachable")
 
 
 @app.post("/create-checkout")
@@ -574,6 +713,17 @@ def create_checkout(body: CheckoutIn, claims=Depends(authz)):
     except Exception:
         write_audit("kafka_failed", username=claims["sub"], details={"event": "events.billing"})
     return {"url": session.url, "id": session.id}
+
+
+@app.post("/agent/task")
+def create_agent_task(body: AgentTaskIn, claims=Depends(authz)):
+    tenant_id = ensure_tenant(claims["sub"])
+    producer.send(
+        "events.agent.tasks",
+        key=claims["sub"].encode(),
+        value={"user": claims["sub"], "tenant_id": tenant_id, "task": body.task},
+    ).get(timeout=5)
+    return {"queued": True}
 
 
 @app.get("/metrics")
@@ -622,6 +772,7 @@ producer = KafkaProducer(
 )
 consumer = KafkaConsumer(
     "events.messages",
+    "events.agent.tasks",
     bootstrap_servers=os.getenv("KAFKA_BROKER"),
     enable_auto_commit=False,
     value_deserializer=lambda m: json.loads(m.decode()),
@@ -648,12 +799,25 @@ wait_for_db()
 
 for msg in consumer:
     try:
+        topic = msg.topic
         with DB.begin() as conn:
-            tenant_id = str(msg.value.get("tenant_id", "")).strip()
-            if not tenant_id:
-                raise ValueError("missing tenant_id")
-            conn.execute(text("INSERT INTO messages(tenant_id,content) VALUES(:t,:c)"),
-                         {"t": tenant_id, "c": msg.value.get("msg", "")})
+            if topic == "events.messages":
+                tenant_id = str(msg.value.get("tenant_id", "")).strip()
+                if not tenant_id:
+                    raise ValueError("missing tenant_id")
+                conn.execute(
+                    text("INSERT INTO messages(tenant_id,content) VALUES(:t,:c)"),
+                    {"t": tenant_id, "c": msg.value.get("msg", "")},
+                )
+            elif topic == "events.agent.tasks":
+                tenant_id = str(msg.value.get("tenant_id", "")).strip()
+                task = str(msg.value.get("task", "")).strip()
+                if not tenant_id or not task:
+                    raise ValueError("missing agent task payload")
+                conn.execute(
+                    text("INSERT INTO messages(tenant_id,content) VALUES(:t,:c)"),
+                    {"t": tenant_id, "c": f"[agent_result] completed task: {task}"},
+                )
         consumer.commit()
     except Exception:
         try:
@@ -672,6 +836,56 @@ HTML
 cat > "$APP_DIR/panels/devops/index.html" <<'HTML'
 <!doctype html><html><body><h1>DevOps Panel</h1><p>Metrics require admin token; endpoint is proxied at /api/metrics.</p></body></html>
 HTML
+
+cat > "$APP_DIR/analytics/requirements.txt" <<'REQ'
+kafka-python==2.0.2
+httpx==0.27.0
+REQ
+
+cat > "$APP_DIR/analytics/Dockerfile" <<'DOCKER'
+FROM python:3.11-slim
+RUN useradd -m -u 10001 appuser
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+USER appuser
+CMD ["python","analytics_worker.py"]
+DOCKER
+
+cat > "$APP_DIR/analytics/analytics_worker.py" <<'PYCODE'
+import os
+import json
+import time
+
+import httpx
+from kafka import KafkaConsumer
+
+CLICKHOUSE_URL = os.getenv("CLICKHOUSE_URL", "http://clickhouse:8123")
+consumer = KafkaConsumer(
+    "events.analytics",
+    bootstrap_servers=os.getenv("KAFKA_BROKER"),
+    enable_auto_commit=False,
+    value_deserializer=lambda m: json.loads(m.decode()),
+    security_protocol=os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+    sasl_mechanism=os.getenv("KAFKA_SASL_MECHANISM", "PLAIN"),
+    sasl_plain_username=os.getenv("KAFKA_USERNAME"),
+    sasl_plain_password=os.getenv("KAFKA_PASSWORD"),
+)
+
+with httpx.Client(timeout=10) as client:
+    for msg in consumer:
+        event = msg.value
+        try:
+            payload = (
+                "INSERT INTO events (event_json, created_at) FORMAT JSONEachRow\n"
+                + json.dumps({"event_json": json.dumps(event), "created_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+            )
+            client.post(f"{CLICKHOUSE_URL}/?database=default", content=payload)
+            consumer.commit()
+        except Exception:
+            time.sleep(1)
+PYCODE
 
 cat > "$APP_DIR/infra/nginx.conf" <<'NGINX'
 events {}
@@ -751,6 +965,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -796,6 +1012,32 @@ services:
     cpus: 1.0
     networks: [internal]
 
+  analytics_worker:
+    build: ../analytics
+    env_file: ../worker/worker.env
+    environment:
+      CLICKHOUSE_URL: http://clickhouse:8123
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    mem_limit: 512m
+    cpus: 0.5
+    networks: [internal]
+
   db:
     image: postgres:15
     restart: always
@@ -839,6 +1081,22 @@ services:
         max-file: "3"
     mem_limit: 512m
     cpus: 0.5
+    networks: [internal]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: always
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 1g
+    cpus: 1.0
     networks: [internal]
 
   zookeeper:
@@ -893,6 +1151,22 @@ services:
     cpus: 1.0
     networks: [internal]
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    restart: always
+    environment:
+      CLICKHOUSE_DB: default
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 1g
+    cpus: 1.0
+    networks: [internal]
+
   nginx:
     build:
       context: ..
@@ -930,6 +1204,8 @@ volumes:
   db_data:
   redis_data:
   kafka_data:
+  qdrant_data:
+  clickhouse_data:
 
 networks:
   internal:
@@ -992,10 +1268,21 @@ docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic ev
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.analytics \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.agent.tasks \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.security \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.dlq \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+
+log "Preparing ClickHouse events table..."
+docker compose exec -T clickhouse clickhouse-client --query "
+CREATE TABLE IF NOT EXISTS default.events (
+  event_json String,
+  created_at DateTime
+) ENGINE = MergeTree
+ORDER BY created_at
+"
 
 log "[5/8] Setup firewall and cron"
 ufw --force default deny incoming

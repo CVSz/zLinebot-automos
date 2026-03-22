@@ -201,6 +201,17 @@ CREATE TABLE IF NOT EXISTS apps (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS goal_metrics (
+  metric TEXT PRIMARY KEY,
+  value DOUBLE PRECISION NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+INSERT INTO goal_metrics(metric, value) VALUES
+('monthly_revenue', 0),
+('user_retention', 0)
+ON CONFLICT (metric) DO NOTHING;
+
 INSERT INTO users(username,password,role)
 VALUES('admin', crypt('${ADMIN_PASS}', gen_salt('bf', 12)), 'admin')
 ON CONFLICT (username) DO NOTHING;
@@ -402,6 +413,28 @@ class CheckoutIn(BaseModel):
 class AgentTaskIn(BaseModel):
     task: str = Field(min_length=3, max_length=500)
 
+class PaymentRouteIn(BaseModel):
+    amount: int = Field(ge=1, le=100000000)
+    user: str = Field(min_length=1, max_length=128)
+
+class SecurityLogIn(BaseModel):
+    log: str = Field(min_length=1, max_length=4000)
+    ip: str = Field(min_length=3, max_length=64)
+
+
+AGENTS = {
+    "ceo": "strategy, decision making",
+    "cto": "infra, scaling",
+    "cmo": "marketing, ads, growth",
+    "cfo": "pricing, revenue optimization",
+    "support": "chatbot, customer support",
+}
+
+GOALS = [
+    {"goal": "increase revenue", "metric": "monthly_revenue"},
+    {"goal": "reduce churn", "metric": "user_retention"},
+]
+
 
 def check_plan(user: str) -> str:
     with DB.begin() as conn:
@@ -501,6 +534,53 @@ def noop_ai(message: str) -> str:
     )
     content = response.choices[0].message.content if response.choices else ""
     return (content or "").strip()[:4000] or "No response"
+
+
+def route_task(task: str) -> str:
+    task_l = task.lower()
+    if "revenue" in task_l or "price" in task_l or "billing" in task_l:
+        return "cfo"
+    if "infra" in task_l or "latency" in task_l or "scaling" in task_l:
+        return "cto"
+    if "marketing" in task_l or "ads" in task_l or "growth" in task_l:
+        return "cmo"
+    if "support" in task_l or "ticket" in task_l or "customer" in task_l:
+        return "support"
+    return "ceo"
+
+
+def get_metric(metric: str) -> float:
+    with DB.begin() as conn:
+        row = conn.execute(text("SELECT value FROM goal_metrics WHERE metric=:m"), {"m": metric}).fetchone()
+    return float(row[0]) if row else 0.0
+
+
+def evaluate_goal(goal: dict) -> dict:
+    current_value = get_metric(goal["metric"])
+    prompt = f"Goal: {goal['goal']}. Current {goal['metric']}={current_value}. Propose one next action."
+    action = noop_ai(prompt)
+    owner = route_task(goal["goal"])
+    return {
+        "goal": goal["goal"],
+        "metric": goal["metric"],
+        "current_value": current_value,
+        "recommended_agent": owner,
+        "action": action,
+    }
+
+
+def route_payment(amount: int, user: str) -> str:
+    if amount > 100000:
+        return "stripe"
+    if user.lower().endswith("_crypto"):
+        return "crypto"
+    return "stripe"
+
+
+def detect_attack(log: str) -> bool:
+    signal = log.lower()
+    patterns = ("union select", "../", "drop table", "or 1=1", "<script", "scan", "nmap")
+    return any(p in signal for p in patterns)
 
 
 def ensure_tenant(username: str) -> str:
@@ -718,12 +798,56 @@ def create_checkout(body: CheckoutIn, claims=Depends(authz)):
 @app.post("/agent/task")
 def create_agent_task(body: AgentTaskIn, claims=Depends(authz)):
     tenant_id = ensure_tenant(claims["sub"])
+    owner = route_task(body.task)
     producer.send(
         "events.agent.tasks",
         key=claims["sub"].encode(),
-        value={"user": claims["sub"], "tenant_id": tenant_id, "task": body.task},
+        value={"user": claims["sub"], "tenant_id": tenant_id, "task": body.task, "owner": owner},
     ).get(timeout=5)
-    return {"queued": True}
+    write_audit("agent_task_queued", username=claims["sub"], details={"owner": owner, "task": body.task[:120]})
+    return {"queued": True, "owner": owner, "owner_scope": AGENTS[owner]}
+
+
+@app.get("/agent/hierarchy")
+def agent_hierarchy(claims=Depends(authz)):
+    return {"agents": AGENTS}
+
+
+@app.post("/goals/evaluate")
+def goals_evaluate(claims=Depends(authz)):
+    if claims.get("role") != "admin":
+        raise HTTPException(403, "admin_only")
+    results = [evaluate_goal(goal) for goal in GOALS]
+    return {"results": results}
+
+
+@app.post("/billing/route")
+def billing_route(body: PaymentRouteIn, claims=Depends(authz)):
+    provider = route_payment(body.amount, body.user)
+    write_audit("billing_route_decision", username=claims["sub"], details={"provider": provider, "amount": body.amount})
+    return {"provider": provider}
+
+
+@app.post("/security/evaluate")
+def security_evaluate(body: SecurityLogIn, claims=Depends(authz)):
+    attack = detect_attack(body.log)
+    if attack:
+        producer.send(
+            "events.security",
+            key=body.ip.encode(),
+            value={"ip": body.ip, "status": "blocked", "reason": "ai_waf_signal"},
+        ).get(timeout=5)
+        write_audit("security_blocked_ip", username=claims["sub"], source_ip=body.ip)
+    return {"attack": attack, "action": "blocked" if attack else "allow"}
+
+
+@app.post("/autonomy/tick")
+def autonomy_tick(claims=Depends(authz)):
+    if claims.get("role") != "admin":
+        raise HTTPException(403, "admin_only")
+    actions = [evaluate_goal(goal) for goal in GOALS]
+    producer.send("events.autonomy.actions", value={"ts": int(time.time()), "actions": actions}).get(timeout=5)
+    return {"loop": ["run_ads", "onboard_users", "process_payments", "improve_product", "scale_infra"], "actions": actions}
 
 
 @app.get("/metrics")
@@ -773,6 +897,8 @@ producer = KafkaProducer(
 consumer = KafkaConsumer(
     "events.messages",
     "events.agent.tasks",
+    "events.security",
+    "events.autonomy.actions",
     bootstrap_servers=os.getenv("KAFKA_BROKER"),
     enable_auto_commit=False,
     value_deserializer=lambda m: json.loads(m.decode()),
@@ -812,11 +938,22 @@ for msg in consumer:
             elif topic == "events.agent.tasks":
                 tenant_id = str(msg.value.get("tenant_id", "")).strip()
                 task = str(msg.value.get("task", "")).strip()
+                owner = str(msg.value.get("owner", "ceo")).strip()
                 if not tenant_id or not task:
                     raise ValueError("missing agent task payload")
                 conn.execute(
                     text("INSERT INTO messages(tenant_id,content) VALUES(:t,:c)"),
-                    {"t": tenant_id, "c": f"[agent_result] completed task: {task}"},
+                    {"t": tenant_id, "c": f"[agent_result] owner={owner} completed task: {task}"},
+                )
+            elif topic == "events.security":
+                conn.execute(
+                    text("INSERT INTO audit_logs(event_type,source_ip,details) VALUES('security_event',:ip,:d::jsonb)"),
+                    {"ip": msg.value.get("ip", ""), "d": json.dumps(msg.value)},
+                )
+            elif topic == "events.autonomy.actions":
+                conn.execute(
+                    text("INSERT INTO audit_logs(event_type,details) VALUES('autonomy_tick',:d::jsonb)"),
+                    {"d": json.dumps(msg.value)},
                 )
         consumer.commit()
     except Exception:
@@ -1271,6 +1408,8 @@ docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic ev
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.agent.tasks \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.security \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.autonomy.actions \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.dlq \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1

@@ -58,6 +58,8 @@ cat > "$APP_DIR/.env" <<ENVFILE
 DOMAIN=${DOMAIN}
 DB_PASS=${DB_PASS}
 REDIS_PASS=${REDIS_PASS}
+TRUST_PROXY=true
+REAL_IP_HEADER=X-Forwarded-For
 DATABASE_URL=postgresql://zeaz:${DB_PASS}@db:5432/zeaz
 JWT_SECRET=${JWT_SECRET_CURRENT}
 JWT_SECRET_CURRENT=${JWT_SECRET_CURRENT}
@@ -77,6 +79,8 @@ JWT_SECRET=${JWT_SECRET_CURRENT}
 JWT_SECRET_CURRENT=${JWT_SECRET_CURRENT}
 JWT_SECRET_PREVIOUS=${JWT_SECRET_PREVIOUS}
 REDIS_URL=redis://:${REDIS_PASS}@redis:6379/0
+TRUST_PROXY=true
+REAL_IP_HEADER=X-Forwarded-For
 KAFKA_BROKER=kafka:9092
 KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
 KAFKA_SASL_MECHANISM=PLAIN
@@ -84,6 +88,8 @@ KAFKA_USERNAME=${KAFKA_USER}
 KAFKA_PASSWORD=${KAFKA_PASS}
 CORS_ORIGINS=https://${DOMAIN}
 OPENAI_API_KEY=REPLACE
+OPENAI_MODEL=gpt-4.1-mini
+STRIPE_SECRET=REPLACE
 ENVFILE
 chmod 600 "$APP_DIR/api/api.env"
 
@@ -136,6 +142,14 @@ CREATE TABLE IF NOT EXISTS users(
   username TEXT UNIQUE NOT NULL,
   password TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',
+  tenant_id UUID,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tenants(
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL,
+  plan TEXT NOT NULL DEFAULT 'free',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -159,6 +173,15 @@ CREATE TABLE IF NOT EXISTS audit_logs(
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS api_keys (
+  id BIGSERIAL PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  owner TEXT NOT NULL,
+  quota INT NOT NULL DEFAULT 10000,
+  used INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 INSERT INTO users(username,password,role)
 VALUES('admin', crypt('${ADMIN_PASS}', gen_salt('bf', 12)), 'admin')
 ON CONFLICT (username) DO NOTHING;
@@ -176,6 +199,7 @@ kafka-python==2.0.2
 openai==1.14.0
 pydantic==2.6.4
 backoff==2.2.1
+stripe==9.2.0
 REQ
 
 cat > "$APP_DIR/api/Dockerfile" <<'DOCKER'
@@ -207,9 +231,13 @@ from jose import jwt, JWTError
 from passlib.context import CryptContext
 from kafka import KafkaProducer
 from redis import Redis
+from openai import OpenAI
+import stripe
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 AI_ENABLED = OPENAI_API_KEY not in {"", "REPLACE"}
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")
 JWT_PRIMARY = os.getenv("JWT_SECRET_CURRENT") or os.getenv("JWT_SECRET", "")
 JWT_FALLBACK = [k for k in os.getenv("JWT_SECRET_PREVIOUS", "").split(",") if k]
 JWT_KEYS = [JWT_PRIMARY, *JWT_FALLBACK]
@@ -236,6 +264,9 @@ producer = KafkaProducer(
     sasl_plain_username=os.getenv("KAFKA_USERNAME"),
     sasl_plain_password=os.getenv("KAFKA_PASSWORD"),
 )
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if AI_ENABLED else None
+if STRIPE_SECRET and STRIPE_SECRET != "REPLACE":
+    stripe.api_key = STRIPE_SECRET
 
 
 def safe_redis(fn, default=None):
@@ -295,6 +326,11 @@ class UserIn(BaseModel):
 
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+
+class CheckoutIn(BaseModel):
+    price_cents: int = Field(default=1000, ge=100, le=1000000)
+    success_url: str = Field(min_length=8, max_length=500)
+    cancel_url: str = Field(min_length=8, max_length=500)
 
 
 def issue_access_token(username: str, role: str) -> str:
@@ -362,7 +398,43 @@ def write_audit(event_type: str, username: str = "", source_ip: str = "", detail
 def noop_ai(message: str) -> str:
     if not AI_ENABLED:
         return "AI not configured"
-    return f"echo: {message[:160]}"
+    response = openai_client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[{"role": "user", "content": message}],
+        timeout=10,
+    )
+    content = response.choices[0].message.content if response.choices else ""
+    return (content or "").strip()[:4000] or "No response"
+
+
+def ensure_tenant(username: str) -> str:
+    tenant_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, username))
+    with DB.begin() as conn:
+        conn.execute(
+            text("INSERT INTO tenants(id,name) VALUES(:id,:name) ON CONFLICT (id) DO NOTHING"),
+            {"id": tenant_id, "name": username},
+        )
+        conn.execute(
+            text("UPDATE users SET tenant_id=:tid WHERE username=:u AND tenant_id IS NULL"),
+            {"tid": tenant_id, "u": username},
+        )
+    return tenant_id
+
+
+def validate_api_key(x_api_key: str) -> str | None:
+    if not x_api_key:
+        return None
+    with DB.begin() as conn:
+        row = conn.execute(
+            text("SELECT owner, quota, used FROM api_keys WHERE key=:k"),
+            {"k": x_api_key},
+        ).fetchone()
+        if not row:
+            raise HTTPException(403, "invalid_api_key")
+        if row[2] >= row[1]:
+            raise HTTPException(402, "quota_exceeded")
+        conn.execute(text("UPDATE api_keys SET used=used+1 WHERE key=:k"), {"k": x_api_key})
+    return row[0]
 
 
 @app.get("/health")
@@ -394,6 +466,7 @@ def login(user: UserIn, x_forwarded_for: str = Header(default="")):
     if not row or not pwd_context.verify(user.password, row[0]):
         write_audit("login_failed", username=user.username, source_ip=source_ip)
         raise HTTPException(401, "invalid_credentials")
+    ensure_tenant(user.username)
     clear_login_delay(user.username, source_ip)
     write_audit("login_success", username=user.username, source_ip=source_ip)
     return {
@@ -458,17 +531,49 @@ def logout_all(claims=Depends(authz)):
 @app.post("/chat")
 def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")):
     check_rate_limit(claims["sub"])
+    owner = validate_api_key(x_api_key)
+    tenant_id = ensure_tenant(claims["sub"])
     reply = cb.call(noop_ai, req.message)
     try:
         producer.send(
             "events.messages",
             key=claims["sub"].encode(),
-            value={"tenant": claims["sub"], "tenant_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, claims["sub"])), "msg": req.message},
+            value={"tenant": claims["sub"], "tenant_id": tenant_id, "msg": req.message},
         ).get(timeout=5)
     except Exception:
         write_audit("kafka_failed", username=claims["sub"], details={"event": "events.messages"})
-    write_audit("chat_used", username=claims["sub"], details={"message_len": len(req.message)})
-    return {"reply": reply, "x_api_key_seen": bool(x_api_key)}
+    write_audit("chat_used", username=claims["sub"], details={"message_len": len(req.message), "api_key_owner": owner})
+    return {"reply": reply, "x_api_key_seen": bool(x_api_key), "api_key_owner": owner}
+
+
+@app.post("/create-checkout")
+def create_checkout(body: CheckoutIn, claims=Depends(authz)):
+    if not STRIPE_SECRET or STRIPE_SECRET == "REPLACE":
+        raise HTTPException(503, "stripe_not_configured")
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {"name": "ZEAZ API Plan"},
+                "unit_amount": body.price_cents,
+            },
+            "quantity": 1,
+        }],
+        mode="payment",
+        success_url=body.success_url,
+        cancel_url=body.cancel_url,
+        metadata={"user": claims["sub"]},
+    )
+    try:
+        producer.send(
+            "events.billing",
+            key=claims["sub"].encode(),
+            value={"user": claims["sub"], "session_id": session.id, "amount": body.price_cents},
+        ).get(timeout=5)
+    except Exception:
+        write_audit("kafka_failed", username=claims["sub"], details={"event": "events.billing"})
+    return {"url": session.url, "id": session.id}
 
 
 @app.get("/metrics")
@@ -572,10 +677,13 @@ cat > "$APP_DIR/infra/nginx.conf" <<'NGINX'
 events {}
 http {
   limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+  limit_req_zone $binary_remote_addr zone=global_limit:10m rate=30r/s;
   limit_conn_zone $binary_remote_addr zone=perip:10m;
   gzip on;
   gzip_types text/plain text/css application/json application/javascript application/xml+rss;
   client_max_body_size 1m;
+  real_ip_header X-Forwarded-For;
+  set_real_ip_from 0.0.0.0/0;
 
   server {
     listen 80;
@@ -598,10 +706,12 @@ http {
     limit_conn perip 30;
 
     location /api/ {
+      limit_req zone=global_limit burst=50 nodelay;
       limit_req zone=api_limit burst=20 nodelay;
       proxy_pass http://api:8000;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
     location /admin/ {
@@ -877,6 +987,12 @@ for i in {1..10}; do
   sleep 3
 done
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.messages \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.billing \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.analytics \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.security \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.dlq \
   --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1

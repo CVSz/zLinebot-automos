@@ -81,6 +81,7 @@ KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
 KAFKA_SASL_MECHANISM=PLAIN
 KAFKA_USERNAME=${KAFKA_USER}
 KAFKA_PASSWORD=${KAFKA_PASS}
+CORS_ORIGINS=https://${DOMAIN}
 OPENAI_API_KEY=REPLACE
 ENVFILE
 chmod 600 "$APP_DIR/api/api.env"
@@ -122,6 +123,8 @@ else
 fi
 
 cat > "$APP_DIR/db/init.sql" <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS users(
   id SERIAL PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
@@ -149,6 +152,10 @@ CREATE TABLE IF NOT EXISTS audit_logs(
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+
+INSERT INTO users(username,password,role)
+VALUES('admin', crypt('ChangeMeNow!2026', gen_salt('bf', 12)), 'admin')
+ON CONFLICT (username) DO NOTHING;
 SQL
 
 cat > "$APP_DIR/api/requirements.txt" <<'REQ'
@@ -205,9 +212,9 @@ if not JWT_PRIMARY:
 DB = create_engine(
     os.getenv("DATABASE_URL"),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30,
+    pool_size=5,
+    max_overflow=10,
+    pool_timeout=10,
     pool_recycle=1800,
 )
 REDIS = Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
@@ -223,6 +230,13 @@ producer = KafkaProducer(
     sasl_plain_username=os.getenv("KAFKA_USERNAME"),
     sasl_plain_password=os.getenv("KAFKA_PASSWORD"),
 )
+
+
+def safe_redis(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
 
 
 def wait_for_db(max_attempts: int = 10, sleep_seconds: int = 3) -> None:
@@ -289,9 +303,10 @@ def issue_access_token(username: str, role: str) -> str:
 
 def issue_refresh_token(username: str, role: str) -> str:
     token = os.urandom(48).hex()
-    REDIS.setex(f"rt:{token}", 7 * 24 * 3600, json.dumps({"sub": username, "role": role}))
-    REDIS.sadd(f"rt_user:{username}", token)
-    REDIS.expire(f"rt_user:{username}", 7 * 24 * 3600)
+    if not safe_redis(lambda: REDIS.setex(f"rt:{token}", 7 * 24 * 3600, json.dumps({"sub": username, "role": role})), False):
+        raise HTTPException(503, "token_store_unavailable")
+    safe_redis(lambda: REDIS.sadd(f"rt_user:{username}", token))
+    safe_redis(lambda: REDIS.expire(f"rt_user:{username}", 7 * 24 * 3600))
     return token
 
 
@@ -308,25 +323,25 @@ def authz(credentials: HTTPAuthorizationCredentials = Security(security)):
 
 def check_rate_limit(subject: str):
     key = f"rl:{subject}:{int(time.time() / 60)}"
-    count = REDIS.incr(key)
+    count = safe_redis(lambda: REDIS.incr(key), 1)
     if count == 1:
-        REDIS.expire(key, 60)
+        safe_redis(lambda: REDIS.expire(key, 60))
     if count > 120:
         raise HTTPException(429, "rate_limited")
 
 
 def apply_login_delay(username: str, source_ip: str):
     key = f"lf:{username}:{source_ip}"
-    attempts = REDIS.incr(key)
+    attempts = safe_redis(lambda: REDIS.incr(key), 1)
     if attempts == 1:
-        REDIS.expire(key, 900)
+        safe_redis(lambda: REDIS.expire(key, 900))
     delay = min(5, max(0, attempts - 1))
     if delay:
         time.sleep(delay)
 
 
 def clear_login_delay(username: str, source_ip: str):
-    REDIS.delete(f"lf:{username}:{source_ip}")
+    safe_redis(lambda: REDIS.delete(f"lf:{username}:{source_ip}"))
 
 
 def write_audit(event_type: str, username: str = "", source_ip: str = "", details: dict | None = None):
@@ -388,12 +403,15 @@ class RefreshIn(BaseModel):
 @app.post("/refresh")
 def refresh(body: RefreshIn):
     key = f"rt:{body.refresh_token}"
-    raw = REDIS.get(key)
+    redis_failed = object()
+    raw = safe_redis(lambda: REDIS.get(key), redis_failed)
+    if raw is redis_failed:
+        raise HTTPException(503, "token_store_unavailable")
     if not raw:
         raise HTTPException(401, "invalid_refresh_token")
     claims = json.loads(raw)
-    REDIS.delete(key)
-    REDIS.srem(f"rt_user:{claims['sub']}", body.refresh_token)
+    safe_redis(lambda: REDIS.delete(key))
+    safe_redis(lambda: REDIS.srem(f"rt_user:{claims['sub']}", body.refresh_token))
     write_audit("token_refresh", username=claims["sub"])
     return {
         "token": issue_access_token(claims["sub"], claims["role"]),
@@ -404,12 +422,15 @@ def refresh(body: RefreshIn):
 @app.post("/logout")
 def logout(body: RefreshIn):
     key = f"rt:{body.refresh_token}"
-    raw = REDIS.get(key)
+    redis_failed = object()
+    raw = safe_redis(lambda: REDIS.get(key), redis_failed)
+    if raw is redis_failed:
+        return {"ok": True, "degraded": True}
     if not raw:
         return {"ok": True}
     claims = json.loads(raw)
-    REDIS.delete(key)
-    REDIS.srem(f"rt_user:{claims['sub']}", body.refresh_token)
+    safe_redis(lambda: REDIS.delete(key))
+    safe_redis(lambda: REDIS.srem(f"rt_user:{claims['sub']}", body.refresh_token))
     write_audit("logout", username=claims["sub"])
     return {"ok": True}
 
@@ -417,13 +438,13 @@ def logout(body: RefreshIn):
 @app.post("/logout_all")
 def logout_all(claims=Depends(authz)):
     tokens_key = f"rt_user:{claims['sub']}"
-    tokens = REDIS.smembers(tokens_key)
+    tokens = safe_redis(lambda: REDIS.smembers(tokens_key), set())
     if tokens:
         pipeline = REDIS.pipeline()
         for token in tokens:
             pipeline.delete(f"rt:{token}")
         pipeline.delete(tokens_key)
-        pipeline.execute()
+        safe_redis(lambda: pipeline.execute())
     write_audit("logout_all", username=claims["sub"])
     return {"ok": True, "revoked": len(tokens)}
 
@@ -432,11 +453,14 @@ def logout_all(claims=Depends(authz)):
 def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")):
     check_rate_limit(claims["sub"])
     reply = cb.call(noop_ai, req.message)
-    producer.send(
-        "events.messages",
-        key=claims["sub"].encode(),
-        value={"tenant": claims["sub"], "tenant_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, claims["sub"])), "msg": req.message},
-    ).get(timeout=5)
+    try:
+        producer.send(
+            "events.messages",
+            key=claims["sub"].encode(),
+            value={"tenant": claims["sub"], "tenant_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, claims["sub"])), "msg": req.message},
+        ).get(timeout=5)
+    except Exception:
+        write_audit("kafka_failed", username=claims["sub"], details={"event": "events.messages"})
     write_audit("chat_used", username=claims["sub"], details={"message_len": len(req.message)})
     return {"reply": reply, "x_api_key_seen": bool(x_api_key)}
 
@@ -521,7 +545,11 @@ for msg in consumer:
                          {"t": tenant_id, "c": msg.value.get("msg", "")})
         consumer.commit()
     except Exception:
-        producer.send("events.dlq", msg.value).get(timeout=5)
+        try:
+            producer.send("events.dlq", msg.value).get(timeout=5)
+        except Exception:
+            pass
+        time.sleep(1)
 PYCODE
 
 cat > "$APP_DIR/panels/admin/index.html" <<'HTML'
@@ -559,7 +587,16 @@ http {
     add_header Content-Security-Policy "default-src 'self';" always;
     add_header Referrer-Policy "no-referrer" always;
     add_header Permissions-Policy "geolocation=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "require-corp" always;
     limit_conn perip 30;
+
+    location = /api/login {
+      limit_req zone=api_limit burst=5 nodelay;
+      proxy_pass http://api:8000/login;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
 
     location /api/ {
       limit_req zone=api_limit burst=20 nodelay;
@@ -598,7 +635,13 @@ services:
     build: ../api
     env_file: ../api/api.env
     restart: always
-    depends_on: [db, redis, kafka]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -612,19 +655,31 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     networks: [internal]
 
   worker:
     build: ../worker
     env_file: ../worker/worker.env
     restart: always
-    depends_on: [db, kafka]
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     networks: [internal]
 
   db:
@@ -637,6 +692,15 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
       - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeaz -d zeaz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     networks: [internal]
 
   redis:
@@ -645,6 +709,15 @@ services:
     command: ["redis-server","--requirepass","${REDIS_PASS}","--appendonly","yes","--bind","0.0.0.0","--protected-mode","yes"]
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASS}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks: [internal]
 
   zookeeper:
@@ -678,6 +751,15 @@ services:
       KAFKA_CLIENT_USERS: ${KAFKA_USER}
       KAFKA_CLIENT_PASSWORDS: ${KAFKA_PASS}
       KAFKA_CFG_LOG_RETENTION_HOURS: 168
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     networks: [internal]
 
   nginx:
@@ -688,7 +770,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    depends_on: [api]
+    depends_on:
+      api:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /var/cache/nginx
@@ -697,6 +781,10 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks: [internal, public]
 
 volumes:
@@ -742,10 +830,21 @@ chmod +x "$APP_DIR/monitor/health.sh"
 log "[4/8] Start stack"
 cd "$APP_DIR/infra"
 docker compose up -d --build
+log "Waiting for DB..."
+until docker compose exec -T db pg_isready -U zeaz -d zeaz >/dev/null 2>&1; do
+  sleep 2
+done
+
+log "Waiting for Kafka..."
+until docker compose exec -T kafka kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1; do
+  sleep 3
+done
+
+log "Creating Kafka topics..."
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.messages \
-  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 >/dev/null 2>&1 || true
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.dlq \
-  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 >/dev/null 2>&1 || true
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
 
 log "[5/8] Setup firewall and cron"
 ufw --force default deny incoming
@@ -756,6 +855,20 @@ ufw --force enable
 
 (crontab -l 2>/dev/null; echo "0 3 * * * ${APP_DIR}/backup/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "*/5 * * * * ${APP_DIR}/monitor/health.sh") | crontab -
+
+cat > /etc/logrotate.d/zeaz <<EOF
+${APP_DIR}/logs/*.log {
+  daily
+  rotate 7
+  compress
+  missingok
+  notifempty
+}
+EOF
+
+if [[ -n "$CERT_EMAIL" && "$DOMAIN" != "localhost" && "$DOMAIN" != *.local ]]; then
+  (crontab -l 2>/dev/null; echo "0 2 * * * certbot renew --quiet && docker compose -f ${APP_DIR}/infra/docker-compose.yml restart nginx") | crontab -
+fi
 
 log "[6/8] Completed"
 cat <<MSG
@@ -772,6 +885,7 @@ API:
 NOTE: Update OPENAI_API_KEY in ${APP_DIR}/api/api.env before production usage.
 NOTE: API will still start without OPENAI_API_KEY and return "AI not configured" for chat responses.
 NOTE: For trusted TLS, rerun with --cert-email admin@your-domain on a publicly-resolvable domain.
+NOTE: Bootstrap admin user is created with username 'admin' and password 'ChangeMeNow!2026' (rotate immediately).
 API-specific secrets: ${APP_DIR}/api/api.env
 Worker-specific secrets: ${APP_DIR}/worker/worker.env
 MSG

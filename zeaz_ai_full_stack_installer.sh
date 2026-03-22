@@ -10,17 +10,19 @@ set -euo pipefail
 DOMAIN=""
 CERT_EMAIL=""
 APP_DIR="/opt/zeaz-v3"
+EXPORT_ZIP="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --cert-email) CERT_EMAIL="${2:-}"; shift 2 ;;
+    --export-zip) EXPORT_ZIP="true"; shift 1 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
 
 if [[ -z "$DOMAIN" ]]; then
-  echo "Usage: sudo bash zeaz_ai_full_stack_installer.sh --domain your-domain [--cert-email admin@your-domain]"
+  echo "Usage: sudo bash zeaz_ai_full_stack_installer.sh --domain your-domain [--cert-email admin@your-domain] [--export-zip]"
   exit 1
 fi
 
@@ -1285,6 +1287,8 @@ services:
   control:
     build: ../control
     restart: always
+    ports:
+      - "8080:8080"
     networks: [internal]
 
   agent:
@@ -1609,7 +1613,12 @@ if [[ -n "$CERT_EMAIL" && "$DOMAIN" != "localhost" && "$DOMAIN" != *.local ]]; t
   (crontab -l 2>/dev/null; echo "0 2 * * * certbot renew --quiet && docker compose -f ${APP_DIR}/infra/docker-compose.yml restart nginx") | crontab -
 fi
 
-log "[6/8] Completed"
+if [[ "$EXPORT_ZIP" == "true" ]]; then
+  log "[7/8] Export project archive"
+  (cd /opt && zip -rq zeaz-v3.zip zeaz-v3)
+fi
+
+log "[8/8] Completed"
 cat <<MSG
 Installed at: ${APP_DIR}
 URL: https://${DOMAIN}
@@ -1634,4 +1643,5 @@ NOTE: For trusted TLS, rerun with --cert-email admin@your-domain on a publicly-r
 NOTE: Bootstrap admin user is created with username 'admin' and generated password '${ADMIN_PASS}' (rotate immediately).
 API-specific secrets: ${APP_DIR}/api/api.env
 Worker-specific secrets: ${APP_DIR}/worker/worker.env
+ZIP export: $( [[ "$EXPORT_ZIP" == "true" ]] && echo "/opt/zeaz-v3.zip" || echo "disabled (use --export-zip)" )
 MSG

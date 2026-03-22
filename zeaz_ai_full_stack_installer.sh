@@ -8,17 +8,19 @@
 set -euo pipefail
 
 DOMAIN=""
+CERT_EMAIL=""
 APP_DIR="/opt/zeaz-v2"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --cert-email) CERT_EMAIL="${2:-}"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
 
 if [[ -z "$DOMAIN" ]]; then
-  echo "Usage: sudo bash zeaz_ai_full_stack_installer.sh --domain your-domain"
+  echo "Usage: sudo bash zeaz_ai_full_stack_installer.sh --domain your-domain [--cert-email admin@your-domain]"
   exit 1
 fi
 
@@ -36,7 +38,7 @@ df -BG / | awk 'NR==2 {gsub("G","",$4); if ($4 < 50) {print "Need >=50GB free di
 log "[2/8] Install dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt update
-apt install -y docker.io docker-compose-plugin curl jq openssl ca-certificates ufw
+apt install -y docker.io docker-compose-plugin curl jq openssl ca-certificates ufw certbot
 systemctl enable docker
 systemctl start docker
 
@@ -93,12 +95,31 @@ KAFKA_PASSWORD=${KAFKA_PASS}
 ENVFILE
 chmod 600 "$APP_DIR/worker/worker.env"
 
-openssl req -x509 -nodes -newkey rsa:2048 \
-  -keyout "$APP_DIR/certs/tls.key" \
-  -out "$APP_DIR/certs/tls.crt" \
-  -days 365 \
-  -subj "/CN=${DOMAIN}"
-chmod 600 "$APP_DIR/certs/tls.key"
+if [[ -n "$CERT_EMAIL" && "$DOMAIN" != "localhost" && "$DOMAIN" != *.local ]]; then
+  log "Attempting Let's Encrypt certificate for ${DOMAIN}"
+  if certbot certonly --standalone --non-interactive --agree-tos -m "$CERT_EMAIL" -d "$DOMAIN"; then
+    cp "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" "$APP_DIR/certs/tls.crt"
+    cp "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" "$APP_DIR/certs/tls.key"
+    chmod 600 "$APP_DIR/certs/tls.key"
+    log "Let's Encrypt certificate issued for ${DOMAIN}"
+  else
+    log "Let's Encrypt failed, falling back to self-signed certificate"
+    openssl req -x509 -nodes -newkey rsa:2048 \
+      -keyout "$APP_DIR/certs/tls.key" \
+      -out "$APP_DIR/certs/tls.crt" \
+      -days 365 \
+      -subj "/CN=${DOMAIN}"
+    chmod 600 "$APP_DIR/certs/tls.key"
+  fi
+else
+  log "Using self-signed certificate (provide --cert-email for Let's Encrypt on public domains)"
+  openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout "$APP_DIR/certs/tls.key" \
+    -out "$APP_DIR/certs/tls.crt" \
+    -days 365 \
+    -subj "/CN=${DOMAIN}"
+  chmod 600 "$APP_DIR/certs/tls.key"
+fi
 
 cat > "$APP_DIR/db/init.sql" <<'SQL'
 CREATE TABLE IF NOT EXISTS users(
@@ -175,13 +196,12 @@ from kafka import KafkaProducer
 from redis import Redis
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+AI_ENABLED = OPENAI_API_KEY not in {"", "REPLACE"}
 JWT_PRIMARY = os.getenv("JWT_SECRET_CURRENT") or os.getenv("JWT_SECRET", "")
 JWT_FALLBACK = [k for k in os.getenv("JWT_SECRET_PREVIOUS", "").split(",") if k]
 JWT_KEYS = [JWT_PRIMARY, *JWT_FALLBACK]
 if not JWT_PRIMARY:
     raise RuntimeError("JWT secret is required")
-if OPENAI_API_KEY in {"", "REPLACE"}:
-    raise RuntimeError("OPENAI_API_KEY must be set to a real key before startup")
 DB = create_engine(
     os.getenv("DATABASE_URL"),
     pool_pre_ping=True,
@@ -191,7 +211,7 @@ DB = create_engine(
     pool_recycle=1800,
 )
 REDIS = Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], bcrypt__rounds=12, deprecated="auto")
 security = HTTPBearer(auto_error=False)
 producer = KafkaProducer(
     bootstrap_servers=os.getenv("KAFKA_BROKER"),
@@ -203,6 +223,21 @@ producer = KafkaProducer(
     sasl_plain_username=os.getenv("KAFKA_USERNAME"),
     sasl_plain_password=os.getenv("KAFKA_PASSWORD"),
 )
+
+
+def wait_for_db(max_attempts: int = 10, sleep_seconds: int = 3) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with DB.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return
+        except Exception:
+            if attempt == max_attempts:
+                raise RuntimeError("DB not ready after retries")
+            time.sleep(sleep_seconds)
+
+
+wait_for_db()
 
 class CircuitBreaker:
     def __init__(self, threshold=5):
@@ -304,6 +339,8 @@ def write_audit(event_type: str, username: str = "", source_ip: str = "", detail
 
 
 def noop_ai(message: str) -> str:
+    if not AI_ENABLED:
+        return "AI not configured"
     return f"echo: {message[:160]}"
 
 
@@ -399,7 +436,7 @@ def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")
         "events.messages",
         key=claims["sub"].encode(),
         value={"tenant": claims["sub"], "tenant_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, claims["sub"])), "msg": req.message},
-    )
+    ).get(timeout=5)
     write_audit("chat_used", username=claims["sub"], details={"message_len": len(req.message)})
     return {"reply": reply, "x_api_key_seen": bool(x_api_key)}
 
@@ -432,6 +469,7 @@ DOCKER
 cat > "$APP_DIR/worker/worker.py" <<'PYCODE'
 import os
 import json
+import time
 
 from kafka import KafkaConsumer, KafkaProducer
 from sqlalchemy import create_engine, text
@@ -458,6 +496,21 @@ consumer = KafkaConsumer(
     sasl_plain_password=os.getenv("KAFKA_PASSWORD"),
 )
 
+
+def wait_for_db(max_attempts: int = 10, sleep_seconds: int = 3) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with DB.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return
+        except Exception:
+            if attempt == max_attempts:
+                raise RuntimeError("DB not ready after retries")
+            time.sleep(sleep_seconds)
+
+
+wait_for_db()
+
 for msg in consumer:
     try:
         with DB.begin() as conn:
@@ -468,7 +521,7 @@ for msg in consumer:
                          {"t": tenant_id, "c": msg.value.get("msg", "")})
         consumer.commit()
     except Exception:
-        producer.send("events.dlq", msg.value)
+        producer.send("events.dlq", msg.value).get(timeout=5)
 PYCODE
 
 cat > "$APP_DIR/panels/admin/index.html" <<'HTML'
@@ -503,6 +556,9 @@ http {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'self';" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Permissions-Policy "geolocation=()" always;
     limit_conn perip 30;
 
     location /api/ {
@@ -618,6 +674,7 @@ services:
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: SASL_PLAINTEXT
       KAFKA_CFG_SASL_ENABLED_MECHANISMS: PLAIN
       KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_CLIENT_USERS: ${KAFKA_USER}
       KAFKA_CLIENT_PASSWORDS: ${KAFKA_PASS}
       KAFKA_CFG_LOG_RETENTION_HOURS: 168
@@ -685,6 +742,10 @@ chmod +x "$APP_DIR/monitor/health.sh"
 log "[4/8] Start stack"
 cd "$APP_DIR/infra"
 docker compose up -d --build
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.messages \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 >/dev/null 2>&1 || true
+docker compose exec -T kafka kafka-topics.sh --create --if-not-exists --topic events.dlq \
+  --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 >/dev/null 2>&1 || true
 
 log "[5/8] Setup firewall and cron"
 ufw --force default deny incoming
@@ -709,6 +770,8 @@ API:
   - POST /api/login
   - POST /api/chat (Bearer token)
 NOTE: Update OPENAI_API_KEY in ${APP_DIR}/api/api.env before production usage.
+NOTE: API will still start without OPENAI_API_KEY and return "AI not configured" for chat responses.
+NOTE: For trusted TLS, rerun with --cert-email admin@your-domain on a publicly-resolvable domain.
 API-specific secrets: ${APP_DIR}/api/api.env
 Worker-specific secrets: ${APP_DIR}/worker/worker.env
 MSG

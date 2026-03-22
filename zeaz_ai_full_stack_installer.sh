@@ -11,18 +11,20 @@ DOMAIN=""
 CERT_EMAIL=""
 APP_DIR="/opt/zeaz-v3"
 EXPORT_ZIP="false"
+BUILD_FULL_PACK="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --cert-email) CERT_EMAIL="${2:-}"; shift 2 ;;
     --export-zip) EXPORT_ZIP="true"; shift 1 ;;
+    --skip-full-pack) BUILD_FULL_PACK="false"; shift 1 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
 
 if [[ -z "$DOMAIN" ]]; then
-  echo "Usage: sudo bash zeaz_ai_full_stack_installer.sh --domain your-domain [--cert-email admin@your-domain] [--export-zip]"
+  echo "Usage: sudo bash zeaz_ai_full_stack_installer.sh --domain your-domain [--cert-email admin@your-domain] [--export-zip] [--skip-full-pack]"
   exit 1
 fi
 
@@ -47,6 +49,9 @@ systemctl start docker
 log "[3/8] Generate project files"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"/{api,worker,agent,control,analytics,infra,panels/{admin,user,devops},backup,monitor,logs,db,certs,prometheus}
+if [[ "$BUILD_FULL_PACK" == "true" ]]; then
+  mkdir -p "$APP_DIR"/{k8s,frontend/src}
+fi
 
 DB_PASS="$(openssl rand -hex 32)"
 REDIS_PASS="$(openssl rand -hex 32)"
@@ -98,6 +103,7 @@ QDRANT_PORT=6333
 MEMORY_MODEL=all-MiniLM-L6-v2
 API_HMAC_SECRET=$(openssl rand -hex 48)
 STRIPE_SECRET=REPLACE
+STRIPE_WEBHOOK_SECRET=REPLACE
 ENVFILE
 chmod 600 "$APP_DIR/api/api.env"
 
@@ -386,6 +392,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 AI_ENABLED = OPENAI_API_KEY not in {"", "REPLACE"}
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 MEMORY_MODEL = os.getenv("MEMORY_MODEL", "all-MiniLM-L6-v2")
@@ -902,6 +909,25 @@ def create_checkout(body: CheckoutIn, claims=Depends(authz)):
     except Exception:
         write_audit("kafka_failed", username=claims["sub"], details={"event": "events.billing"})
     return {"url": session.url, "id": session.id}
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    if not STRIPE_SECRET or STRIPE_SECRET == "REPLACE":
+        raise HTTPException(503, "stripe_not_configured")
+    if not STRIPE_WEBHOOK_SECRET or STRIPE_WEBHOOK_SECRET == "REPLACE":
+        raise HTTPException(503, "stripe_webhook_secret_not_configured")
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    except Exception:
+        raise HTTPException(400, "invalid_stripe_signature")
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        username = (session.get("metadata") or {}).get("user", "unknown")
+        write_audit("checkout_completed", username=username, details={"session_id": session.get("id")})
+    return {"ok": True}
 
 
 @app.post("/agent/task")
@@ -1495,6 +1521,189 @@ networks:
   public:
 COMPOSE
 
+if [[ "$BUILD_FULL_PACK" == "true" ]]; then
+cat > "$APP_DIR/k8s/namespace.yaml" <<'YAML'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zeaz
+YAML
+
+cat > "$APP_DIR/k8s/api.yaml" <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zeaz-api
+  namespace: zeaz
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zeaz-api
+  template:
+    metadata:
+      labels:
+        app: zeaz-api
+    spec:
+      containers:
+        - name: api
+          image: zeaz/api:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zeaz-api
+  namespace: zeaz
+spec:
+  selector:
+    app: zeaz-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+YAML
+
+cat > "$APP_DIR/k8s/worker.yaml" <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zeaz-worker
+  namespace: zeaz
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zeaz-worker
+  template:
+    metadata:
+      labels:
+        app: zeaz-worker
+    spec:
+      containers:
+        - name: worker
+          image: zeaz/worker:latest
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+YAML
+
+cat > "$APP_DIR/k8s/hpa.yaml" <<'YAML'
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zeaz-api-hpa
+  namespace: zeaz
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zeaz-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+YAML
+
+cat > "$APP_DIR/k8s/ingress.yaml" <<'YAML'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zeaz-ingress
+  namespace: zeaz
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: zeaz.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zeaz-api
+                port:
+                  number: 80
+YAML
+
+cat > "$APP_DIR/k8s/deploy.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+kubectl apply -f namespace.yaml
+kubectl apply -f api.yaml
+kubectl apply -f worker.yaml
+kubectl apply -f hpa.yaml
+kubectl apply -f ingress.yaml
+BASH
+chmod +x "$APP_DIR/k8s/deploy.sh"
+
+cat > "$APP_DIR/frontend/package.json" <<'JSON'
+{
+  "name": "zeaz-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "tailwindcss": "^3.4.13",
+    "vite": "^5.4.8"
+  }
+}
+JSON
+
+cat > "$APP_DIR/frontend/src/Dashboard.jsx" <<'JSX'
+import { useEffect, useState } from "react";
+import axios from "axios";
+
+export default function Dashboard() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    axios
+      .get("/api/metrics", {
+        headers: { Authorization: "Bearer " + localStorage.token },
+      })
+      .then((res) => setData(res.data))
+      .catch(() => setData({ error: "Unable to load metrics" }));
+  }, []);
+
+  return (
+    <div className="p-6">
+      <h1 className="text-2xl font-bold">Dashboard</h1>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
+    </div>
+  );
+}
+JSX
+fi
+
 cat > "$APP_DIR/backup/backup.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1644,4 +1853,5 @@ NOTE: Bootstrap admin user is created with username 'admin' and generated passwo
 API-specific secrets: ${APP_DIR}/api/api.env
 Worker-specific secrets: ${APP_DIR}/worker/worker.env
 ZIP export: $( [[ "$EXPORT_ZIP" == "true" ]] && echo "/opt/zeaz-v3.zip" || echo "disabled (use --export-zip)" )
+K8s full pack: $( [[ "$BUILD_FULL_PACK" == "true" ]] && echo "${APP_DIR}/k8s (apply with ./deploy.sh)" || echo "disabled (--skip-full-pack used)" )
 MSG

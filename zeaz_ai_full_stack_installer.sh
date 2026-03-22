@@ -36,7 +36,7 @@ df -BG / | awk 'NR==2 {gsub("G","",$4); if ($4 < 50) {print "Need >=50GB free di
 log "[2/8] Install dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt update
-apt install -y docker.io docker-compose-plugin curl jq openssl ca-certificates
+apt install -y docker.io docker-compose-plugin curl jq openssl ca-certificates ufw
 systemctl enable docker
 systemctl start docker
 
@@ -65,9 +65,33 @@ KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
 KAFKA_SASL_MECHANISM=PLAIN
 KAFKA_USERNAME=${KAFKA_USER}
 KAFKA_PASSWORD=${KAFKA_PASS}
-OPENAI_API_KEY=REPLACE
 ENVFILE
 chmod 600 "$APP_DIR/.env"
+
+cat > "$APP_DIR/api/api.env" <<ENVFILE
+DATABASE_URL=postgresql://zeaz:${DB_PASS}@db:5432/zeaz
+JWT_SECRET=${JWT_SECRET_CURRENT}
+JWT_SECRET_CURRENT=${JWT_SECRET_CURRENT}
+JWT_SECRET_PREVIOUS=${JWT_SECRET_PREVIOUS}
+REDIS_URL=redis://:${REDIS_PASS}@redis:6379/0
+KAFKA_BROKER=kafka:9092
+KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
+KAFKA_SASL_MECHANISM=PLAIN
+KAFKA_USERNAME=${KAFKA_USER}
+KAFKA_PASSWORD=${KAFKA_PASS}
+OPENAI_API_KEY=REPLACE
+ENVFILE
+chmod 600 "$APP_DIR/api/api.env"
+
+cat > "$APP_DIR/worker/worker.env" <<ENVFILE
+DATABASE_URL=postgresql://zeaz:${DB_PASS}@db:5432/zeaz
+KAFKA_BROKER=kafka:9092
+KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
+KAFKA_SASL_MECHANISM=PLAIN
+KAFKA_USERNAME=${KAFKA_USER}
+KAFKA_PASSWORD=${KAFKA_PASS}
+ENVFILE
+chmod 600 "$APP_DIR/worker/worker.env"
 
 openssl req -x509 -nodes -newkey rsa:2048 \
   -keyout "$APP_DIR/certs/tls.key" \
@@ -87,12 +111,23 @@ CREATE TABLE IF NOT EXISTS users(
 
 CREATE TABLE IF NOT EXISTS messages(
   id BIGSERIAL PRIMARY KEY,
-  tenant_id INT NOT NULL,
+  tenant_id TEXT NOT NULL,
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_id);
+
+CREATE TABLE IF NOT EXISTS audit_logs(
+  id BIGSERIAL PRIMARY KEY,
+  username TEXT,
+  event_type TEXT NOT NULL,
+  source_ip TEXT,
+  details JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
 SQL
 
 cat > "$APP_DIR/api/requirements.txt" <<'REQ'
@@ -124,7 +159,7 @@ cat > "$APP_DIR/api/main.py" <<'PYCODE'
 import os
 import time
 import json
-import zlib
+import uuid
 from threading import Lock
 from datetime import datetime, timedelta, timezone
 
@@ -147,7 +182,14 @@ if not JWT_PRIMARY:
     raise RuntimeError("JWT secret is required")
 if OPENAI_API_KEY in {"", "REPLACE"}:
     raise RuntimeError("OPENAI_API_KEY must be set to a real key before startup")
-DB = create_engine(os.getenv("DATABASE_URL"), pool_pre_ping=True)
+DB = create_engine(
+    os.getenv("DATABASE_URL"),
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800,
+)
 REDIS = Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
@@ -200,13 +242,20 @@ class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
 
 
-def issue_token(username: str, role: str) -> str:
+def issue_access_token(username: str, role: str) -> str:
     payload = {
         "sub": username,
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        "typ": "access",
     }
     return jwt.encode(payload, JWT_PRIMARY, algorithm="HS256")
+
+
+def issue_refresh_token(username: str, role: str) -> str:
+    token = os.urandom(48).hex()
+    REDIS.setex(f"rt:{token}", 7 * 24 * 3600, json.dumps({"sub": username, "role": role}))
+    return token
 
 
 def authz(credentials: HTTPAuthorizationCredentials = Security(security)):
@@ -227,6 +276,15 @@ def check_rate_limit(subject: str):
         REDIS.expire(key, 60)
     if count > 120:
         raise HTTPException(429, "rate_limited")
+
+
+def write_audit(event_type: str, username: str = "", source_ip: str = "", details: dict | None = None):
+    payload = details or {}
+    with DB.begin() as conn:
+        conn.execute(
+            text("INSERT INTO audit_logs(username,event_type,source_ip,details) VALUES(:u,:e,:ip,:d::jsonb)"),
+            {"u": username or None, "e": event_type, "ip": source_ip or None, "d": json.dumps(payload)},
+        )
 
 
 def noop_ai(message: str) -> str:
@@ -252,12 +310,38 @@ def register(user: UserIn):
 
 
 @app.post("/login")
-def login(user: UserIn):
+def login(user: UserIn, x_forwarded_for: str = Header(default="")):
+    source_ip = (x_forwarded_for.split(",")[0].strip() if x_forwarded_for else "unknown")
+    check_rate_limit(f"login-ip:{source_ip}")
+    check_rate_limit(f"login-user:{user.username}")
     with DB.begin() as conn:
         row = conn.execute(text("SELECT password, role FROM users WHERE username=:u"), {"u": user.username}).fetchone()
     if not row or not pwd_context.verify(user.password, row[0]):
+        write_audit("login_failed", username=user.username, source_ip=source_ip)
         raise HTTPException(401, "invalid_credentials")
-    return {"token": issue_token(user.username, row[1])}
+    write_audit("login_success", username=user.username, source_ip=source_ip)
+    return {
+        "token": issue_access_token(user.username, row[1]),
+        "refresh_token": issue_refresh_token(user.username, row[1]),
+    }
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=64, max_length=256)
+
+
+@app.post("/refresh")
+def refresh(body: RefreshIn):
+    key = f"rt:{body.refresh_token}"
+    raw = REDIS.get(key)
+    if not raw:
+        raise HTTPException(401, "invalid_refresh_token")
+    claims = json.loads(raw)
+    REDIS.delete(key)
+    return {
+        "token": issue_access_token(claims["sub"], claims["role"]),
+        "refresh_token": issue_refresh_token(claims["sub"], claims["role"]),
+    }
 
 
 @app.post("/chat")
@@ -267,7 +351,7 @@ def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")
     producer.send(
         "events.messages",
         key=claims["sub"].encode(),
-        value={"tenant": claims["sub"], "tenant_id": zlib.crc32(claims["sub"].encode()) + 1, "msg": req.message},
+        value={"tenant": claims["sub"], "tenant_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, claims["sub"])), "msg": req.message},
     )
     return {"reply": reply, "x_api_key_seen": bool(x_api_key)}
 
@@ -328,8 +412,8 @@ consumer = KafkaConsumer(
 for msg in consumer:
     try:
         with DB.begin() as conn:
-            tenant_id = int(msg.value.get("tenant_id", 0))
-            if tenant_id <= 0:
+            tenant_id = str(msg.value.get("tenant_id", "")).strip()
+            if not tenant_id:
                 raise ValueError("missing tenant_id")
             conn.execute(text("INSERT INTO messages(tenant_id,content) VALUES(:t,:c)"),
                          {"t": tenant_id, "c": msg.value.get("msg", "")})
@@ -407,7 +491,7 @@ cat > "$APP_DIR/infra/docker-compose.yml" <<COMPOSE
 services:
   api:
     build: ../api
-    env_file: ../.env
+    env_file: ../api/api.env
     restart: always
     depends_on: [db, redis, kafka]
     healthcheck:
@@ -421,7 +505,7 @@ services:
 
   worker:
     build: ../worker
-    env_file: ../.env
+    env_file: ../worker/worker.env
     restart: always
     depends_on: [db, kafka]
     networks: [internal]
@@ -505,9 +589,18 @@ cat > "$APP_DIR/backup/backup.sh" <<'BASH'
 set -euo pipefail
 TS=$(date +%F_%H-%M)
 FILE="/opt/zeaz-v2/backup/db_${TS}.sql.gz"
+ENCRYPTED_FILE="${FILE}.enc"
+BACKUP_KEY_FILE="/opt/zeaz-v2/backup/.backup_key"
 DB_CONTAINER=$(docker compose -f /opt/zeaz-v2/infra/docker-compose.yml ps -q db)
 docker exec "$DB_CONTAINER" pg_dump -U zeaz zeaz | gzip > "$FILE"
 test -s "$FILE"
+if [[ ! -f "$BACKUP_KEY_FILE" ]]; then
+  umask 077
+  openssl rand -hex 32 > "$BACKUP_KEY_FILE"
+fi
+openssl enc -aes-256-cbc -pbkdf2 -salt -in "$FILE" -out "$ENCRYPTED_FILE" -pass "file:${BACKUP_KEY_FILE}"
+rm -f "$FILE"
+test -s "$ENCRYPTED_FILE"
 find /opt/zeaz-v2/backup -type f -mtime +7 -delete
 BASH
 chmod +x "$APP_DIR/backup/backup.sh"
@@ -524,7 +617,13 @@ log "[4/8] Start stack"
 cd "$APP_DIR/infra"
 docker compose up -d --build
 
-log "[5/8] Setup cron"
+log "[5/8] Setup firewall and cron"
+ufw --force default deny incoming
+ufw --force default allow outgoing
+ufw --force allow 80/tcp
+ufw --force allow 443/tcp
+ufw --force enable
+
 (crontab -l 2>/dev/null; echo "0 3 * * * ${APP_DIR}/backup/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "*/5 * * * * ${APP_DIR}/monitor/health.sh") | crontab -
 
@@ -540,5 +639,7 @@ API:
   - POST /api/register
   - POST /api/login
   - POST /api/chat (Bearer token)
-NOTE: Update OPENAI_API_KEY in ${APP_DIR}/.env if needed.
+NOTE: Update OPENAI_API_KEY in ${APP_DIR}/api/api.env before production usage.
+API-specific secrets: ${APP_DIR}/api/api.env
+Worker-specific secrets: ${APP_DIR}/worker/worker.env
 MSG

@@ -152,7 +152,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 USER appuser
-CMD ["uvicorn","main:app","--host","0.0.0.0","--port","8000"]
+CMD ["uvicorn","main:app","--host","0.0.0.0","--port","8000","--timeout-keep-alive","5"]
 DOCKER
 
 cat > "$APP_DIR/api/main.py" <<'PYCODE'
@@ -255,6 +255,8 @@ def issue_access_token(username: str, role: str) -> str:
 def issue_refresh_token(username: str, role: str) -> str:
     token = os.urandom(48).hex()
     REDIS.setex(f"rt:{token}", 7 * 24 * 3600, json.dumps({"sub": username, "role": role}))
+    REDIS.sadd(f"rt_user:{username}", token)
+    REDIS.expire(f"rt_user:{username}", 7 * 24 * 3600)
     return token
 
 
@@ -276,6 +278,20 @@ def check_rate_limit(subject: str):
         REDIS.expire(key, 60)
     if count > 120:
         raise HTTPException(429, "rate_limited")
+
+
+def apply_login_delay(username: str, source_ip: str):
+    key = f"lf:{username}:{source_ip}"
+    attempts = REDIS.incr(key)
+    if attempts == 1:
+        REDIS.expire(key, 900)
+    delay = min(5, max(0, attempts - 1))
+    if delay:
+        time.sleep(delay)
+
+
+def clear_login_delay(username: str, source_ip: str):
+    REDIS.delete(f"lf:{username}:{source_ip}")
 
 
 def write_audit(event_type: str, username: str = "", source_ip: str = "", details: dict | None = None):
@@ -314,11 +330,13 @@ def login(user: UserIn, x_forwarded_for: str = Header(default="")):
     source_ip = (x_forwarded_for.split(",")[0].strip() if x_forwarded_for else "unknown")
     check_rate_limit(f"login-ip:{source_ip}")
     check_rate_limit(f"login-user:{user.username}")
+    apply_login_delay(user.username, source_ip)
     with DB.begin() as conn:
         row = conn.execute(text("SELECT password, role FROM users WHERE username=:u"), {"u": user.username}).fetchone()
     if not row or not pwd_context.verify(user.password, row[0]):
         write_audit("login_failed", username=user.username, source_ip=source_ip)
         raise HTTPException(401, "invalid_credentials")
+    clear_login_delay(user.username, source_ip)
     write_audit("login_success", username=user.username, source_ip=source_ip)
     return {
         "token": issue_access_token(user.username, row[1]),
@@ -338,10 +356,39 @@ def refresh(body: RefreshIn):
         raise HTTPException(401, "invalid_refresh_token")
     claims = json.loads(raw)
     REDIS.delete(key)
+    REDIS.srem(f"rt_user:{claims['sub']}", body.refresh_token)
+    write_audit("token_refresh", username=claims["sub"])
     return {
         "token": issue_access_token(claims["sub"], claims["role"]),
         "refresh_token": issue_refresh_token(claims["sub"], claims["role"]),
     }
+
+
+@app.post("/logout")
+def logout(body: RefreshIn):
+    key = f"rt:{body.refresh_token}"
+    raw = REDIS.get(key)
+    if not raw:
+        return {"ok": True}
+    claims = json.loads(raw)
+    REDIS.delete(key)
+    REDIS.srem(f"rt_user:{claims['sub']}", body.refresh_token)
+    write_audit("logout", username=claims["sub"])
+    return {"ok": True}
+
+
+@app.post("/logout_all")
+def logout_all(claims=Depends(authz)):
+    tokens_key = f"rt_user:{claims['sub']}"
+    tokens = REDIS.smembers(tokens_key)
+    if tokens:
+        pipeline = REDIS.pipeline()
+        for token in tokens:
+            pipeline.delete(f"rt:{token}")
+        pipeline.delete(tokens_key)
+        pipeline.execute()
+    write_audit("logout_all", username=claims["sub"])
+    return {"ok": True, "revoked": len(tokens)}
 
 
 @app.post("/chat")
@@ -353,6 +400,7 @@ def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")
         key=claims["sub"].encode(),
         value={"tenant": claims["sub"], "tenant_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, claims["sub"])), "msg": req.message},
     )
+    write_audit("chat_used", username=claims["sub"], details={"message_len": len(req.message)})
     return {"reply": reply, "x_api_key_seen": bool(x_api_key)}
 
 
@@ -360,6 +408,7 @@ def chat(req: ChatIn, claims=Depends(authz), x_api_key: str = Header(default="")
 def metrics(claims=Depends(authz)):
     if claims.get("role") != "admin":
         raise HTTPException(403, "admin_only")
+    write_audit("admin_metrics_access", username=claims.get("sub", ""))
     return {"users": "restricted"}
 PYCODE
 
@@ -501,6 +550,12 @@ services:
       retries: 3
     volumes:
       - ../logs:/app/logs
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
     networks: [internal]
 
   worker:
@@ -508,6 +563,12 @@ services:
     env_file: ../worker/worker.env
     restart: always
     depends_on: [db, kafka]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
     networks: [internal]
 
   db:
@@ -571,6 +632,14 @@ services:
       - "80:80"
       - "443:443"
     depends_on: [api]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
     networks: [internal, public]
 
 volumes:

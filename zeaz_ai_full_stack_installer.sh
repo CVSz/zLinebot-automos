@@ -35,22 +35,23 @@ DB_USER="zeaz_user"
 DB_PASS="StrongPass_Change"
 SERVICE_NAME="zeaz-ai"
 GROWTH_SERVICE_NAME="zeaz-growth"
+SYNC_SERVICE_NAME="zeaz-tiktok-sync"
 
 log() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $*"; }
 
-log "[1/14] Install base packages"
+log "[1/15] Install base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt update
 apt install -y python3 python3-venv python3-pip nginx redis-server postgresql certbot python3-certbot-nginx git curl ufw
 
-log "[2/14] Create app user + folders"
+log "[2/15] Create app user + folders"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$APP_USER"
 fi
 mkdir -p "$APP_DIR"
 chown -R "$APP_USER:$APP_GROUP" "$APP_DIR"
 
-log "[3/14] Setup PostgreSQL (idempotent)"
+log "[3/15] Setup PostgreSQL (idempotent)"
 sudo -u postgres psql <<SQL
 DO \$\$
 BEGIN
@@ -70,7 +71,7 @@ END
 GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
 SQL
 
-log "[4/14] Python virtualenv + dependencies"
+log "[4/15] Python virtualenv + dependencies"
 sudo -u "$APP_USER" bash <<'EOT1'
 set -euo pipefail
 cd /opt/zeaz-ai
@@ -89,10 +90,13 @@ pip install \
   structlog \
   orjson \
   pandas \
-  scikit-learn
+  scikit-learn \
+  gspread \
+  google-auth \
+  watchdog
 EOT1
 
-log "[5/14] Create app.py (multi-agent webhook)"
+log "[5/15] Create app.py (multi-agent webhook)"
 sudo -u "$APP_USER" bash <<'EOT2'
 cat > /opt/zeaz-ai/app.py <<'PY'
 import os
@@ -216,7 +220,7 @@ def health():
 PY
 EOT2
 
-log "[6/14] Create growth.py"
+log "[6/15] Create growth.py"
 sudo -u "$APP_USER" bash <<'EOT3'
 cat > /opt/zeaz-ai/growth.py <<'PY'
 import os
@@ -267,7 +271,7 @@ def broadcast(seg: str, msg: str):
 PY
 EOT3
 
-log "[7/14] Create runner.py"
+log "[7/15] Create runner.py"
 sudo -u "$APP_USER" bash <<'EOT4'
 cat > /opt/zeaz-ai/runner.py <<'PY'
 import time
@@ -284,7 +288,150 @@ while True:
 PY
 EOT4
 
-log "[8/14] Create .env"
+log "[8/15] Create TikTok export sync worker"
+sudo -u "$APP_USER" bash <<'EOT5'
+mkdir -p /opt/zeaz-ai/exports
+cat > /opt/zeaz-ai/tiktok_sync.py <<'PY'
+import csv
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+import gspread
+from google.oauth2.service_account import Credentials
+from sqlalchemy import create_engine, text
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+EXPORT_DIR = os.getenv("TIKTOK_EXPORT_DIR", "/opt/zeaz-ai/exports")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL missing")
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+REQUIRED_FIELDS = ["Order ID", "Buyer Name", "Phone", "Address"]
+
+
+def ensure_orders_table():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                buyer_name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                address TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'tiktok_export',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+
+
+def get_sheet():
+    if not GOOGLE_SHEET_ID or not GOOGLE_SERVICE_ACCOUNT_JSON:
+        return None
+    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    creds = Credentials.from_service_account_info(
+        info,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+    client = gspread.authorize(creds)
+    return client.open_by_key(GOOGLE_SHEET_ID).sheet1
+
+
+def normalize(row: dict) -> dict:
+    return {
+        "order_id": str(row["Order ID"]).strip(),
+        "buyer_name": str(row["Buyer Name"]).strip(),
+        "phone": str(row["Phone"]).strip(),
+        "address": str(row["Address"]).strip(),
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def upsert_order(payload: dict):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO orders(order_id, buyer_name, phone, address, synced_at)
+            VALUES (:order_id, :buyer_name, :phone, :address, NOW())
+            ON CONFLICT (order_id)
+            DO UPDATE SET
+                buyer_name = EXCLUDED.buyer_name,
+                phone = EXCLUDED.phone,
+                address = EXCLUDED.address,
+                synced_at = NOW()
+        """), payload)
+
+
+def append_sheet(sheet, payload: dict):
+    if not sheet:
+        return
+    sheet.append_row(
+        [
+            payload["order_id"],
+            payload["buyer_name"],
+            payload["phone"],
+            payload["address"],
+            payload["synced_at"],
+        ],
+        value_input_option="USER_ENTERED",
+    )
+
+
+def process_csv(path: Path):
+    sheet = get_sheet()
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        missing = [c for c in REQUIRED_FIELDS if c not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"CSV schema invalid, missing columns: {missing}")
+
+        for row in reader:
+            payload = normalize(row)
+            if not payload["order_id"]:
+                continue
+            upsert_order(payload)
+            append_sheet(sheet, payload)
+
+
+class ExportHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if event.is_directory or not event.src_path.endswith(".csv"):
+            return
+        process_csv(Path(event.src_path))
+
+
+def run():
+    ensure_orders_table()
+    Path(EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+
+    for item in Path(EXPORT_DIR).glob("*.csv"):
+        process_csv(item)
+
+    observer = Observer()
+    observer.schedule(ExportHandler(), EXPORT_DIR, recursive=False)
+    observer.start()
+    try:
+        observer.join()
+    except KeyboardInterrupt:
+        observer.stop()
+        observer.join()
+
+
+if __name__ == "__main__":
+    run()
+PY
+EOT5
+
+log "[9/15] Create .env"
 cat > "$APP_DIR/.env" <<EOT5
 LINE_CHANNEL_ACCESS_TOKEN=REPLACE
 LINE_CHANNEL_SECRET=REPLACE
@@ -292,11 +439,14 @@ OPENAI_API_KEY=REPLACE
 MODEL_NAME=gpt-4.1-mini
 REDIS_URL=redis://127.0.0.1:6379/0
 DATABASE_URL=postgresql+psycopg2://${DB_USER}:${DB_PASS}@127.0.0.1:5432/${DB_NAME}
+TIKTOK_EXPORT_DIR=/opt/zeaz-ai/exports
+GOOGLE_SHEET_ID=REPLACE
+GOOGLE_SERVICE_ACCOUNT_JSON=REPLACE
 EOT5
 chown "$APP_USER:$APP_GROUP" "$APP_DIR/.env"
 chmod 600 "$APP_DIR/.env"
 
-log "[9/14] systemd services"
+log "[10/15] systemd services"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOT6
 [Unit]
 Description=ZEAZ AI LINE Webhook
@@ -331,11 +481,28 @@ RestartSec=3
 WantedBy=multi-user.target
 EOT7
 
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME" "$GROWTH_SERVICE_NAME"
+cat > "/etc/systemd/system/${SYNC_SERVICE_NAME}.service" <<EOT8
+[Unit]
+Description=ZEAZ TikTok Export Sync
+After=network.target
 
-log "[10/14] Nginx site"
-cat > /etc/nginx/sites-available/zeaz-ai <<EOT8
+[Service]
+User=${APP_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${APP_DIR}/.env
+ExecStart=${APP_DIR}/venv/bin/python tiktok_sync.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOT8
+
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME" "$GROWTH_SERVICE_NAME" "$SYNC_SERVICE_NAME"
+
+log "[11/15] Nginx site"
+cat > /etc/nginx/sites-available/zeaz-ai <<EOT9
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -349,22 +516,23 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOT8
+EOT9
 ln -sf /etc/nginx/sites-available/zeaz-ai /etc/nginx/sites-enabled/zeaz-ai
 nginx -t
 systemctl restart nginx
 
-log "[11/14] TLS via certbot"
+log "[12/15] TLS via certbot"
 certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
 
-log "[12/14] Firewall"
+log "[13/15] Firewall"
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
 ufw --force enable
 
-log "[13/14] Start services"
-systemctl restart "$SERVICE_NAME" "$GROWTH_SERVICE_NAME"
+log "[14/15] Start services"
+systemctl restart "$SERVICE_NAME" "$GROWTH_SERVICE_NAME" "$SYNC_SERVICE_NAME"
 
-log "[14/14] COMPLETE"
+log "[15/15] COMPLETE"
 echo "Webhook URL: https://${DOMAIN}/webhook"
 echo "Remember to set LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET / OPENAI_API_KEY in ${APP_DIR}/.env"
+echo "For TikTok export sync, set GOOGLE_SHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON in ${APP_DIR}/.env"

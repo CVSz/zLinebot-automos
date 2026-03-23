@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  api:
+    build: ../backend/api
+    env_file:
+      - ../.env
+      - ../backend/api/api.env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+
+  worker:
+    build: ../backend/worker
+    env_file:
+      - ../.env
+      - ../backend/worker/worker.env
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: always
+    networks: [internal]
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: zeaz
+      POSTGRES_USER: zeaz
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ../backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeaz -d zeaz"]
+      interval: 10s
+      retries: 5
+    restart: always
+    networks: [internal]
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--requirepass", "${REDIS_PASS}"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASS}", "ping"]
+      interval: 10s
+      retries: 5
+    restart: always
+    networks: [internal]
+
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "no"
+      ZOO_ENABLE_AUTH: "yes"
+      ZOO_SERVER_USERS: ${KAFKA_USER}
+      ZOO_SERVER_PASSWORDS: ${KAFKA_PASS}
+    restart: always
+    networks: [internal]
+
+  kafka:
+    image: bitnami/kafka:latest
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_CLIENT_USERS: ${KAFKA_USER}
+      KAFKA_CLIENT_PASSWORDS: ${KAFKA_PASS}
+      KAFKA_CFG_LISTENERS: SASL_PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: SASL_PLAINTEXT://kafka:9092
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1"]
+      interval: 15s
+      retries: 10
+    restart: always
+    networks: [internal]
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: infra/nginx.Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: always
+    networks: [internal, public]
+
+volumes:
+  db_data:
+
+networks:
+  internal:
+    internal: true
+  public:

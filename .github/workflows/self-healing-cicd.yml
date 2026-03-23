@@ -1,4 +1,4 @@
-name: zTTato Self-Healing CI/CD
+name: zLineBot-automos Self-Healing CI/CD
 
 on:
   push:
@@ -32,13 +32,13 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: zeaz-ultra/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install frontend/backend dependencies
         id: deps
         continue-on-error: true
         run: npm ci
-        working-directory: zeaz-ultra
+        working-directory: /
 
       - name: Lint & static analysis
         id: lint
@@ -46,7 +46,7 @@ jobs:
         run: |
           npm run build
           npm audit --audit-level=high
-        working-directory: zeaz-ultra
+        working-directory: /
 
       - name: Unit and integration test gate
         id: tests

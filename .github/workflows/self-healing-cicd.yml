@@ -26,10 +26,14 @@ jobs:
     timeout-minutes: 45
     outputs:
       ci_failed: ${{ steps.gate.outputs.ci_failed }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # ---------------------------
+      # Runtime setup
+      # ---------------------------
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
@@ -46,85 +50,126 @@ jobs:
             backend/api/requirements.txt
             backend/worker/requirements.txt
 
+      # ---------------------------
+      # Dependencies
+      # ---------------------------
       - name: Install workspace dependencies
         id: npm_deps
         continue-on-error: true
-        run: npm ci
+        run: |
+          set -e
+          npm ci
 
       - name: Install backend dependencies
         id: python_deps
         continue-on-error: true
         run: |
+          set -e
           python -m pip install --upgrade pip
           python -m pip install -r backend/api/requirements.txt -r backend/worker/requirements.txt
 
+      # ---------------------------
+      # Build & Test
+      # ---------------------------
       - name: Build frontend workspaces
         id: frontend_build
         continue-on-error: true
         run: |
+          set -e
           npm run build:frontend
           npm run build:landing
 
-      - name: Run FastAPI auth tests
+      - name: Run FastAPI tests
         id: api_tests
         continue-on-error: true
         working-directory: backend/api
-        run: PYTHONPATH=. pytest tests -q
+        run: |
+          set -e
+          PYTHONPATH=. pytest tests -q
 
-      - name: Validate Python service modules
+      - name: Validate Python modules
         id: python_checks
         continue-on-error: true
-        run: python -m py_compile backend/api/main.py backend/worker/worker.py
+        run: |
+          set -e
+          python -m py_compile backend/api/main.py backend/worker/worker.py
 
+      # ---------------------------
+      # Docker validation (FIXED)
+      # ---------------------------
       - name: Validate Docker Compose configuration
         id: compose
         continue-on-error: true
         run: |
+          set -euo pipefail
+
           if ! command -v docker >/dev/null 2>&1; then
             echo "Docker CLI not found on runner." >&2
             exit 1
           fi
 
-          sudo service docker start || true
+          # Start Docker daemon properly
+          sudo systemctl start docker || true
+
           docker version
 
-          if ! docker compose version; then
-            sudo apt-get update
-            sudo apt-get install -y docker-compose-plugin
-            docker compose version
+          # Ensure Compose plugin exists
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Installing docker-compose-plugin..."
+            sudo apt-get update -y
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin
           fi
 
+          docker compose version
+
+          # Validate compose config
           docker compose config -q
 
+      # ---------------------------
+      # IaC validation
+      # ---------------------------
       - name: IaC policy validation (OPA + Kyverno)
         id: iac
         continue-on-error: true
         run: |
+          set -e
           chmod +x infrastructure/scripts/check-iac-policy.sh
           ./infrastructure/scripts/check-iac-policy.sh
 
+      # ---------------------------
+      # Security scan (Trivy)
+      # ---------------------------
       - name: Security scan (filesystem)
         id: trivy
         continue-on-error: true
         run: |
+          set -e
           mkdir -p .bin
-          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz \
-            -o /tmp/trivy.tgz
+          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz -o /tmp/trivy.tgz
           tar -xzf /tmp/trivy.tgz -C .bin trivy
+          chmod +x .bin/trivy
           ./.bin/trivy fs --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .
 
+      # ---------------------------
+      # Docker build
+      # ---------------------------
       - name: Build deployable images
         id: docker
         continue-on-error: true
         run: |
+          set -e
           docker build -t zlinebot-automos-api:${{ github.sha }} backend/api
           docker build -t zlinebot-automos-worker:${{ github.sha }} backend/worker
           docker build -t zlinebot-automos-nginx:${{ github.sha }} -f infra/nginx.Dockerfile .
 
+      # ---------------------------
+      # Gate evaluation
+      # ---------------------------
       - name: Evaluate CI gates
         id: gate
         run: |
           failed=0
+
           echo "npm_deps => ${{ steps.npm_deps.outcome }}"
           echo "python_deps => ${{ steps.python_deps.outcome }}"
           echo "frontend_build => ${{ steps.frontend_build.outcome }}"
@@ -146,47 +191,54 @@ jobs:
           [ "${{ steps.docker.outcome }}" = "failure" ] && failed=1
 
           echo "ci_failed=$failed" >> "$GITHUB_OUTPUT"
+
           if [ "$failed" -eq 1 ]; then
-            echo "One or more zLineBot-automos CI gates failed. Triggering self-heal job." >&2
+            echo "One or more CI gates failed. Triggering self-heal job." >&2
             exit 1
           fi
 
+  # ===========================
+  # SELF-HEALING JOB
+  # ===========================
   self-healing:
     name: AI-assisted self-heal
     if: failure() && needs.validate-and-build.outputs.ci_failed == '1'
     needs: [validate-and-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Set up Python for fix tooling
+      - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Run auto-fix pipeline
         run: |
+          set -e
           chmod +x infrastructure/scripts/auto-fix-pipeline.sh
           ./infrastructure/scripts/auto-fix-pipeline.sh
 
-      - name: Open remediation PR
+      - name: Create remediation PR
         uses: peter-evans/create-pull-request@v8
         with:
-          commit-message: "ci(self-heal): automated remediation for failed zLineBot-automos pipeline"
-          title: "ci(self-heal): automated remediation for failed zLineBot-automos pipeline"
+          commit-message: "ci(self-heal): automated remediation"
+          title: "ci(self-heal): automated remediation"
           body: |
-            ## Self-healing remediation PR
-            This PR was generated after zLineBot-automos CI gate failures.
+            ## 🤖 Self-healing remediation PR
 
-            ### Actions completed
-            - Normalized executable bits for CI scripts
-            - Performed whitespace and YAML hygiene fixes
-            - Captured candidate files for manual review
+            This PR was automatically generated after CI failures.
 
-            > Review this PR before merge. Some issues may still need human input.
+            ### Fixes applied
+            - Normalized script permissions
+            - Fixed YAML / formatting issues
+            - Prepared files for manual review
+
+            ⚠️ Please review carefully before merging.
           branch: ci/self-healing/${{ github.run_id }}
           delete-branch: true

@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zlinebot-automos-api
+  labels:
+    app: zlinebot-automos-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zlinebot-automos-api
+  template:
+    metadata:
+      labels:
+        app: zlinebot-automos-api
+    spec:
+      containers:
+        - name: api
+          image: zlinebot-automos/api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: zlinebot-automos-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zlinebot-automos-api
+spec:
+  selector:
+    app: zlinebot-automos-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

@@ -1,19 +1,10 @@
 # Changelog
 
-All notable changes to repository documentation and feature cataloging are recorded here.
+## 2026-03-23
 
-## [2026-03-23] - Repository Documentation Consolidation
-
-### Added
-
-- Root-level `README.md` with unified overview of all repository projects, quick-start flows, and documentation index.
-- New `FEATURES.md` with complete cross-project feature inventory covering:
-  - ZEAZ Ultra Landing
-  - ZEAZ Ultra Pack
-  - Infrastructure policy toolkit
-- Root-level `CHANGELOG.md` to centralize documentation/history tracking.
-
-### Documented
-
-- Product/UI features, API endpoints, worker/data pipeline behavior, infra topology, operations scripts, and policy/compliance capabilities.
-- Current feature status matrix and known functional gaps/TODO indicators.
+### Changed
+- Flattened the repository into a single root-level project structure named `zLineBot-automos`.
+- Promoted the full-stack app from the former nested package into root directories: `frontend/`, `backend/`, `infra/`, `.env.example`, and `gen-secrets.sh`.
+- Preserved additional source modules as root-level directories: `landing/`, `backend-node/`, `api/`, `ai-agent/`, `billing/`, `docker/`, `k8s/`, `monitoring/`, `security/`, `viral-content/`, `worker/`, and `scripts/`.
+- Added a root `docker-compose.yml` so installation and service management operate from the repository root.
+- Updated project metadata, HTML titles, API titles, documentation, and infrastructure references from legacy ZEAZ naming to `zLineBot-automos`.

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createBroadcast,
   createCheckout,
@@ -31,6 +31,16 @@ function readSession() {
   }
 }
 
+function actionsForStatus(status) {
+  const index = pipeline.indexOf(status);
+
+  if (index === -1) {
+    return [];
+  }
+
+  return [pipeline[index - 1], pipeline[index + 1]].filter(Boolean);
+}
+
 export default function DashboardPage() {
   const [session, setSession] = useState(() => readSession());
   const [profile, setProfile] = useState(null);
@@ -43,42 +53,63 @@ export default function DashboardPage() {
   const [templateDraft, setTemplateDraft] = useState({ name: "", message: "" });
   const [broadcastDraft, setBroadcastDraft] = useState({ name: "Promo Blast", message: "", target_status: "" });
   const [feedback, setFeedback] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [actionBusy, setActionBusy] = useState(false);
 
   const token = session?.access_token;
   const tenantId = session?.user?.tenant_id;
 
-  const loadDashboard = async () => {
+  const handleAuthFailure = useCallback((message) => {
+    setFeedback(message);
+    localStorage.removeItem("zline.session");
+    setSession(null);
+    window.location.href = "/login";
+  }, []);
+
+  const loadDashboard = useCallback(async (options = {}) => {
     if (!token || !tenantId) {
       window.location.href = "/login";
       return;
     }
 
-    const [me, statsData, leadsData, templatesData, campaignsData, revenueData] = await Promise.all([
-      getMe(token),
-      getStats(token, tenantId),
-      getLeads(token, tenantId),
-      getTemplates(token, tenantId),
-      getCampaigns(token, tenantId),
-      getRevenueDaily(token, tenantId)
-    ]);
+    if (!options.background) {
+      setLoading(true);
+    }
 
-    setProfile(me);
-    setStats(statsData);
-    setLeads(leadsData);
-    setTemplates(templatesData);
-    setCampaigns(campaignsData);
-    setDailyRevenue(revenueData);
-  };
+    try {
+      const [me, statsData, leadsData, templatesData, campaignsData, revenueData] = await Promise.all([
+        getMe(token),
+        getStats(token, tenantId),
+        getLeads(token, tenantId),
+        getTemplates(token, tenantId),
+        getCampaigns(token, tenantId),
+        getRevenueDaily(token, tenantId)
+      ]);
+
+      setProfile(me);
+      setStats(statsData);
+      setLeads(leadsData);
+      setTemplates(templatesData);
+      setCampaigns(campaignsData);
+      setDailyRevenue(revenueData);
+      if (!options.keepFeedback) {
+        setFeedback("");
+      }
+    } catch (error) {
+      if (error.message.toLowerCase().includes("credentials")) {
+        handleAuthFailure(error.message);
+        return;
+      }
+
+      setFeedback(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [handleAuthFailure, tenantId, token]);
 
   useEffect(() => {
-    loadDashboard().catch((error) => {
-      setFeedback(error.message);
-      if (error.message.toLowerCase().includes("credentials")) {
-        localStorage.removeItem("zline.session");
-        window.location.href = "/login";
-      }
-    });
-  }, []);
+    loadDashboard();
+  }, [loadDashboard]);
 
   const visibleLeads = useMemo(() => (
     statusFilter === "all" ? leads : leads.filter((lead) => lead.status === statusFilter)
@@ -91,32 +122,45 @@ export default function DashboardPage() {
     return accumulator;
   }, {}), [visibleLeads]);
 
-  const updateLeadStatus = async (leadId, status) => {
-    await patchLead(token, tenantId, leadId, { status });
-    setFeedback(`Lead moved to ${status}.`);
-    await loadDashboard();
-  };
+  const executeAction = useCallback(async (action, successMessage) => {
+    setActionBusy(true);
+    try {
+      await action();
+      setFeedback(successMessage);
+      await loadDashboard({ background: true, keepFeedback: true });
+    } catch (error) {
+      setFeedback(error.message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadDashboard]);
+
+  const updateLeadStatus = (leadId, status) => executeAction(
+    () => patchLead(token, tenantId, leadId, { status }),
+    `Lead moved to ${status}.`
+  );
 
   const submitTemplate = async (event) => {
     event.preventDefault();
-    await createTemplate(token, tenantId, templateDraft);
-    setTemplateDraft({ name: "", message: "" });
-    setFeedback("Template saved.");
-    await loadDashboard();
+    await executeAction(async () => {
+      await createTemplate(token, tenantId, templateDraft);
+      setTemplateDraft({ name: "", message: "" });
+    }, "Template saved.");
   };
 
   const submitBroadcast = async (event) => {
     event.preventDefault();
-    await createBroadcast(token, tenantId, {
-      ...broadcastDraft,
-      target_status: broadcastDraft.target_status || null
-    });
-    setFeedback("Broadcast queued.");
-    setBroadcastDraft({ name: "Promo Blast", message: "", target_status: "" });
-    await loadDashboard();
+    await executeAction(async () => {
+      await createBroadcast(token, tenantId, {
+        ...broadcastDraft,
+        target_status: broadcastDraft.target_status || null
+      });
+      setBroadcastDraft({ name: "Promo Blast", message: "", target_status: "" });
+    }, "Broadcast queued.");
   };
 
   const startBilling = async () => {
+    setActionBusy(true);
     try {
       const data = await createCheckout(token, {});
       if (data.url) {
@@ -124,6 +168,8 @@ export default function DashboardPage() {
       }
     } catch (error) {
       setFeedback(error.message);
+    } finally {
+      setActionBusy(false);
     }
   };
 
@@ -137,6 +183,16 @@ export default function DashboardPage() {
     return null;
   }
 
+  if (loading) {
+    return (
+      <section className="mx-auto max-w-7xl px-6 py-12">
+        <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-10 text-center text-slate-300 shadow-2xl shadow-cyan-950/20">
+          Loading your CRM workspace...
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="mx-auto max-w-7xl px-6 py-10">
       <header className="flex flex-col gap-4 rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl shadow-cyan-950/20 lg:flex-row lg:items-center lg:justify-between">
@@ -148,7 +204,10 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button className="rounded-lg border border-cyan-400 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/10" onClick={startBilling}>
+          <button className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60" onClick={() => loadDashboard({ background: true, keepFeedback: true })} disabled={actionBusy}>
+            Refresh data
+          </button>
+          <button className="rounded-lg border border-cyan-400 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-60" onClick={startBilling} disabled={actionBusy}>
             Upgrade billing
           </button>
           <button className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800" onClick={logout}>
@@ -194,29 +253,34 @@ export default function DashboardPage() {
                   <span className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300">{groupedLeads[status]?.length || 0}</span>
                 </div>
                 <div className="space-y-3">
-                  {(groupedLeads[status] || []).map((lead) => (
+                  {(groupedLeads[status] || []).length ? (groupedLeads[status] || []).map((lead) => (
                     <article key={lead.id} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <h4 className="font-semibold text-white">{lead.name || "Unnamed lead"}</h4>
                           <p className="text-xs text-slate-400">{lead.phone || "No phone yet"}</p>
                         </div>
-                        <span className="text-xs font-semibold text-cyan-300">{lead.score}</span>
+                        <span className="text-xs font-semibold text-cyan-300">Score {lead.score}</span>
                       </div>
-                      <p className="mt-2 line-clamp-4 text-xs text-slate-300">{lead.interest}</p>
+                      <p className="mt-2 line-clamp-4 text-xs text-slate-300">{lead.interest || "No notes yet."}</p>
+                      <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Value {formatMoney(lead.price)}</span>
+                        <span>{new Date(lead.updated_at).toLocaleDateString()}</span>
+                      </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
-                        {pipeline.filter((item) => item !== lead.status).slice(0, 2).map((nextStatus) => (
+                        {actionsForStatus(lead.status).map((nextStatus) => (
                           <button
                             key={nextStatus}
-                            className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+                            className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                             onClick={() => updateLeadStatus(lead.id, nextStatus)}
+                            disabled={actionBusy}
                           >
                             Move to {nextStatus}
                           </button>
                         ))}
                       </div>
                     </article>
-                  ))}
+                  )) : <EmptyState message={`No ${status} leads in this view.`} />}
                 </div>
               </div>
             ))}
@@ -249,7 +313,7 @@ export default function DashboardPage() {
               {dailyRevenue.length ? dailyRevenue.map((point) => (
                 <div key={point.date} className="flex flex-1 flex-col items-center gap-2">
                   <div className="flex w-full items-end justify-center rounded-t-lg bg-cyan-500/20 px-2" style={{ height: `${Math.max(12, (point.revenue / revenuePeak) * 120)}px` }}>
-                    <span className="pb-2 text-xs font-semibold text-cyan-200">{point.revenue}</span>
+                    <span className="pb-2 text-xs font-semibold text-cyan-200">{formatMoney(point.revenue)}</span>
                   </div>
                   <span className="text-[10px] text-slate-400">{point.date}</span>
                 </div>
@@ -276,12 +340,12 @@ export default function DashboardPage() {
               onChange={(event) => setTemplateDraft((current) => ({ ...current, message: event.target.value }))}
               required
             />
-            <button className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400" type="submit">
+            <button className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={actionBusy}>
               Save template
             </button>
           </form>
           <div className="mt-4 space-y-3">
-            {templates.map((template) => (
+            {templates.length ? templates.map((template) => (
               <div key={template.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -291,12 +355,13 @@ export default function DashboardPage() {
                   <button
                     className="rounded-lg border border-cyan-500 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/10"
                     onClick={() => setBroadcastDraft((current) => ({ ...current, message: template.message, name: template.name }))}
+                    type="button"
                   >
                     Use
                   </button>
                 </div>
               </div>
-            ))}
+            )) : <EmptyState message="No templates yet. Save your best-performing script here." />}
           </div>
         </Panel>
 
@@ -326,7 +391,7 @@ export default function DashboardPage() {
               onChange={(event) => setBroadcastDraft((current) => ({ ...current, message: event.target.value }))}
               required
             />
-            <button className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400" type="submit">
+            <button className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={actionBusy}>
               Queue broadcast
             </button>
           </form>
@@ -341,7 +406,7 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800 bg-slate-900/40 text-slate-200">
-                {campaigns.map((campaign) => (
+                {campaigns.length ? campaigns.map((campaign) => (
                   <tr key={campaign.id}>
                     <td className="px-3 py-3">
                       <div className="font-semibold">{campaign.name}</div>
@@ -351,7 +416,11 @@ export default function DashboardPage() {
                     <td className="px-3 py-3">{campaign.sent_count}</td>
                     <td className="px-3 py-3">{campaign.reply_count} ({campaign.reply_rate}%)</td>
                   </tr>
-                ))}
+                )) : (
+                  <tr>
+                    <td className="px-3 py-6 text-center text-slate-400" colSpan="4">No campaigns yet.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -379,5 +448,13 @@ function Panel({ title, subtitle, children }) {
       </div>
       {children}
     </section>
+  );
+}
+
+function EmptyState({ message }) {
+  return (
+    <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/30 px-3 py-4 text-center text-xs text-slate-400">
+      {message}
+    </div>
   );
 }

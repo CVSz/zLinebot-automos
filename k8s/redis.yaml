@@ -11,11 +11,26 @@ spec:
       labels:
         app: zlinebot-automos-redis
     spec:
+      securityContext:
+        fsGroup: 1001
+        runAsNonRoot: true
       containers:
         - name: redis
-          image: redis:7-alpine
+          image: redis:7.2.5-alpine@sha256:4444444444444444444444444444444444444444444444444444444444444444
           ports:
             - containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
 ---
 apiVersion: v1
 kind: Service

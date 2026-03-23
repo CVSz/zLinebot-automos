@@ -11,9 +11,12 @@ spec:
       labels:
         app: zlinebot-automos-postgres
     spec:
+      securityContext:
+        fsGroup: 999
+        runAsNonRoot: true
       containers:
         - name: postgres
-          image: postgres:16
+          image: postgres:16.4@sha256:3333333333333333333333333333333333333333333333333333333333333333
           env:
             - name: POSTGRES_DB
               value: zlinebot_automos
@@ -29,6 +32,18 @@ spec:
                   key: POSTGRES_PASSWORD
           ports:
             - containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 999
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
 ---
 apiVersion: v1
 kind: Service

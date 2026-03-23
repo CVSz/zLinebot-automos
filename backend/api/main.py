@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -189,9 +189,17 @@ def _health_payload():
 
 
 def create_app(database_url: str | None = None) -> FastAPI:
-    app = FastAPI(title="zLineBot-automos API")
-    app.state.user_store = UserStore(database_url or DEFAULT_DATABASE_URL)
-    app.state.user_store.initialize()
+    user_store = UserStore(database_url or DEFAULT_DATABASE_URL)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.user_store.initialize()
+        yield
+
+    app = FastAPI(title="zLineBot-automos API", lifespan=lifespan)
+    app.state.user_store = user_store
+    if user_store.is_sqlite:
+        user_store.initialize()
 
     @app.get("/health")
     def health():

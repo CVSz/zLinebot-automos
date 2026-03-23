@@ -79,7 +79,22 @@ jobs:
       - name: Validate Docker Compose configuration
         id: compose
         continue-on-error: true
-        run: docker compose config -q
+        run: |
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker CLI not found on runner." >&2
+            exit 1
+          fi
+
+          sudo service docker start || true
+          docker version
+
+          if ! docker compose version; then
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+            docker compose version
+          fi
+
+          docker compose config -q
 
       - name: IaC policy validation (OPA + Kyverno)
         id: iac
@@ -91,14 +106,12 @@ jobs:
       - name: Security scan (filesystem)
         id: trivy
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.32.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          format: table
-          ignore-unfixed: true
-          exit-code: 1
+        run: |
+          mkdir -p .bin
+          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz \
+            -o /tmp/trivy.tgz
+          tar -xzf /tmp/trivy.tgz -C .bin trivy
+          ./.bin/trivy fs --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .
 
       - name: Build deployable images
         id: docker

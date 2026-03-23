@@ -1,0 +1,195 @@
+name: zTTato Self-Healing CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: write
+
+concurrency:
+  group: self-healing-cicd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    name: Validate, test, scan, and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      ci_failed: ${{ steps.gate.outputs.ci_failed }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: zeaz-ultra/package-lock.json
+
+      - name: Install frontend/backend dependencies
+        id: deps
+        continue-on-error: true
+        run: npm ci
+        working-directory: zeaz-ultra
+
+      - name: Lint & static analysis
+        id: lint
+        continue-on-error: true
+        run: |
+          npm run build
+          npm audit --audit-level=high
+        working-directory: zeaz-ultra
+
+      - name: Unit and integration test gate
+        id: tests
+        continue-on-error: true
+        run: |
+          if npm run | grep -q " test"; then
+            npm test
+          else
+            echo "No npm test script defined. Treating as informational." >&2
+          fi
+        working-directory: zeaz-ultra
+
+      - name: IaC policy validation (OPA + Kyverno)
+        id: iac
+        continue-on-error: true
+        run: |
+          chmod +x infrastructure/scripts/check-iac-policy.sh
+          ./infrastructure/scripts/check-iac-policy.sh
+
+      - name: Security scan (filesystem)
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          format: table
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Docker build
+        id: docker
+        continue-on-error: true
+        run: docker build -t zttato-platform:${{ github.sha }} zeaz-ultra
+
+      - name: Evaluate CI gates
+        id: gate
+        run: |
+          failed=0
+          echo "deps => ${{ steps.deps.outcome }}"
+          echo "lint => ${{ steps.lint.outcome }}"
+          echo "tests => ${{ steps.tests.outcome }}"
+          echo "iac => ${{ steps.iac.outcome }}"
+          echo "trivy => ${{ steps.trivy.outcome }}"
+          echo "docker => ${{ steps.docker.outcome }}"
+
+          [ "${{ steps.deps.outcome }}" = "failure" ] && failed=1
+          [ "${{ steps.lint.outcome }}" = "failure" ] && failed=1
+          [ "${{ steps.tests.outcome }}" = "failure" ] && failed=1
+          [ "${{ steps.iac.outcome }}" = "failure" ] && failed=1
+          [ "${{ steps.trivy.outcome }}" = "failure" ] && failed=1
+          [ "${{ steps.docker.outcome }}" = "failure" ] && failed=1
+
+          echo "ci_failed=$failed" >> "$GITHUB_OUTPUT"
+          if [ "$failed" -eq 1 ]; then
+            echo "One or more gates failed. Triggering self-heal job." >&2
+            exit 1
+          fi
+
+  self-healing:
+    name: AI-assisted self-heal
+    if: failure() && needs.validate-and-build.outputs.ci_failed == '1'
+    needs: [validate-and-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python for fix tooling
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run auto-fix pipeline
+        run: |
+          chmod +x infrastructure/scripts/auto-fix-pipeline.sh
+          ./infrastructure/scripts/auto-fix-pipeline.sh
+
+      - name: Open remediation PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "ci(self-heal): automated remediation for failed pipeline"
+          title: "ci(self-heal): automated remediation for failed pipeline"
+          body: |
+            ## Self-healing remediation PR
+            This PR was generated after CI gate failures.
+
+            ### Actions completed
+            - Normalized executable bits for CI scripts
+            - Performed whitespace and YAML hygiene fixes
+            - Captured candidate files for manual review
+
+            > Review this PR before merge. Some issues may still need human input.
+          branch: ci/self-healing/${{ github.run_id }}
+          delete-branch: true
+
+  deploy:
+    name: Multi-region canary deploy + validation
+    runs-on: ubuntu-24.04
+    needs: [validate-and-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.validate-and-build.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [us-east, us-west]
+    env:
+      REGION: ${{ matrix.region }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy manifests (canary)
+        uses: azure/k8s-deploy@v5
+        with:
+          strategy: canary
+          percentage: 25
+          manifests: |
+            zeaz-ultra/k8s/*.yaml
+          images: |
+            zttato-platform:${{ github.sha }}
+
+      - name: Post-deploy health check
+        id: health
+        run: |
+          kubectl rollout status deployment/api --timeout=180s
+          kubectl rollout status deployment/worker --timeout=180s
+
+      - name: Auto rollback on failure
+        if: failure() && steps.health.outcome == 'failure'
+        run: |
+          kubectl rollout undo deployment/api
+          kubectl rollout undo deployment/worker
+          exit 1
+
+      - name: Notify channel
+        if: always()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": "zTTato CI/CD completed for ${{ github.sha }} in ${{ matrix.region }} with status: ${{ job.status }}"
+            }

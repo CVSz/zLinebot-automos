@@ -20,9 +20,18 @@ class ChatPayload(BaseModel):
     message: str
 
 
+def _health_payload():
+    return {"status": "ok", "service": "api"}
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "api"}
+    return _health_payload()
+
+
+@app.get("/api/health")
+def health_api():
+    return _health_payload()
 
 
 @app.post("/api/register")

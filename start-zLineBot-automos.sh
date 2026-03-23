@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-APP_NAME="zLineBot"
+APP_NAME="zLineBot-automos"
 INSTALL_DIR="/opt/${APP_NAME}"
 VERSION_FILE="${INSTALL_DIR}/.version.lock"
 REPO_URL="${REPO_URL:-https://github.com/example/${APP_NAME}.git}"

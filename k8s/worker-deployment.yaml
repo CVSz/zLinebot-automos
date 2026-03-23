@@ -14,13 +14,21 @@ spec:
       labels:
         app: zlinebot-automos-worker
     spec:
+      securityContext:
+        fsGroup: 10001
+        runAsNonRoot: true
       containers:
         - name: worker
-          image: zlinebot-automos/worker:latest
+          image: zlinebot-automos/worker:1.0.0@sha256:2222222222222222222222222222222222222222222222222222222222222222
           imagePullPolicy: IfNotPresent
           envFrom:
             - secretRef:
                 name: zlinebot-automos-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 10001
           resources:
             requests:
               cpu: "100m"

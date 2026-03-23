@@ -4,7 +4,8 @@ services:
   api:
     build: ../backend/api
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
       - ../backend/api/api.env
     depends_on:
       db:
@@ -26,7 +27,8 @@ services:
   worker:
     build: ../backend/worker
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
       - ../backend/worker/worker.env
     depends_on:
       db:
@@ -138,7 +140,8 @@ services:
     image: cloudflare/cloudflared:latest
     profiles: ["cloudflare"]
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
     depends_on:
       nginx:
         condition: service_healthy

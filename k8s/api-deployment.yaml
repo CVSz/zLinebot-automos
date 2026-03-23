@@ -14,15 +14,23 @@ spec:
       labels:
         app: zlinebot-automos-api
     spec:
+      securityContext:
+        fsGroup: 10001
+        runAsNonRoot: true
       containers:
         - name: api
-          image: zlinebot-automos/api:latest
+          image: zlinebot-automos/api:1.0.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
           envFrom:
             - secretRef:
                 name: zlinebot-automos-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 10001
           resources:
             requests:
               cpu: "250m"

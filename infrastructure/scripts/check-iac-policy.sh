@@ -12,12 +12,15 @@ export PATH="$BIN_DIR:$PATH"
 
 if ! command -v conftest >/dev/null 2>&1; then
   echo "Installing conftest..."
-  curl -sSL https://raw.githubusercontent.com/open-policy-agent/conftest/master/install.sh | bash -s -- -b "$BIN_DIR"
+  curl -fsSL https://github.com/open-policy-agent/conftest/releases/download/v0.67.0/conftest_0.67.0_Linux_x86_64.tar.gz \
+    -o /tmp/conftest.tar.gz
+  tar -xzf /tmp/conftest.tar.gz -C "$BIN_DIR" conftest
+  chmod +x "$BIN_DIR/conftest"
 fi
 
 if ! command -v kyverno >/dev/null 2>&1; then
   echo "Installing kyverno CLI..."
-  curl -sSL https://github.com/kyverno/kyverno/releases/latest/download/kyverno-cli_v1.14.5_linux_x86_64.tar.gz \
+  curl -fsSL https://github.com/kyverno/kyverno/releases/download/v1.14.5/kyverno-cli_v1.14.5_linux_x86_64.tar.gz \
     | tar -xz -C "$BIN_DIR" kyverno
   chmod +x "$BIN_DIR/kyverno"
 fi
@@ -26,6 +29,6 @@ echo "Running OPA policy checks..."
 conftest test "$K8S_DIR"/*.yaml -p "$OPA_POLICY"
 
 echo "Running Kyverno policy checks..."
-kyverno apply "$KYVERNO_POLICY" --resource "$K8S_DIR"/*.yaml --audit-warn-exit-code 1
+kyverno apply "$KYVERNO_POLICY" --resource "$K8S_DIR"/*.yaml --warn-exit-code 1
 
 echo "IaC policy checks passed."

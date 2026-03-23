@@ -10,7 +10,9 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await postLogin(payload);
+      localStorage.setItem("zline.session", JSON.stringify(data));
       setResult(data);
+      window.location.href = "/dashboard";
     } catch (error) {
       setResult({ error: error.message });
     } finally {

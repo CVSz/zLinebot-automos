@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -72,3 +75,20 @@ def test_register_rejects_short_passwords(tmp_path: Path):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "password must be at least 8 characters"
+
+
+def test_import_does_not_touch_database_at_module_import(tmp_path: Path):
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "postgresql://invalid:invalid@127.0.0.1:1/not-used"
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import main; print('ok')"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"

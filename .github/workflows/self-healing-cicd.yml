@@ -91,7 +91,7 @@ jobs:
       - name: Security scan (filesystem)
         id: trivy
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.32.0
+        uses: aquasecurity/trivy-action@v0.34.0
         with:
           scan-type: fs
           scan-ref: .

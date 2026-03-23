@@ -22,7 +22,7 @@ export default function SignupPage() {
     <section className="px-6 py-16">
       <AuthForm mode="signup" onSubmit={submitSignup} loading={loading} result={result} />
       <p className="mt-6 text-center text-sm text-slate-400">
-        Already have an account? <a className="font-semibold text-cyan-300" href="/login">Login here</a>
+        Already have a workspace? <a className="font-semibold text-cyan-300" href="/login">Login here</a>
       </p>
     </section>
   );

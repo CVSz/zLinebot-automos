@@ -1,29 +1,67 @@
 # zLineBot-automos Feature Inventory
 
-## 1) Root Full-Stack Application
+## 1) Primary CRM application
 
-- React + Vite frontend in `frontend/`.
-- FastAPI API service in `backend/api/`.
-- Background worker in `backend/worker/`.
-- Postgres bootstrap SQL in `backend/db/init.sql`.
-- NGINX, TLS, backup, monitoring, and Cloudflared assets in `infra/`.
-- Root `docker-compose.yml` as the primary stack entrypoint.
+### Frontend (`frontend/`)
+- React + Vite dashboard route at `/dashboard`.
+- Workspace signup and login flows.
+- Persisted session handling after login.
+- KPI cards for lead count, hot leads, revenue, and conversion rate.
+- Lead pipeline board grouped by status.
+- Template management UI.
+- Broadcast composer with campaign history.
+- Billing upgrade trigger for Stripe checkout.
 
-## 2) Preserved Supporting Source Modules
+### API (`backend/api/`)
+- Multi-tenant schema models for `Tenant`, `User`, `Lead`, `Template`, `Campaign`, and `Message`.
+- Password hashing with scrypt and JWT-based login.
+- Tenant-scoped authorization and `X-Tenant-Id` support.
+- LINE webhook ingestion with lead extraction, scoring, and stage assignment.
+- Ollama-compatible reply generation with fallback responses.
+- Lead listing, updates, stats, and daily revenue endpoints.
+- Template and campaign endpoints.
+- Stripe checkout session and webhook handlers.
+- Redis-backed rate limiting with in-memory fallback.
+- Kafka-backed broadcast queue publisher with sync fallback if the queue is unavailable.
+
+### Worker (`backend/worker/`)
+- Kafka consumer for inbound message events.
+- Kafka consumer for queued broadcast campaigns.
+- LINE push delivery for campaign recipients.
+- Campaign sent-count updates.
+- Message persistence for outbound campaign sends.
+- DLQ fallback on processing errors.
+
+### Database bootstrap (`backend/db/init.sql`)
+- Tenant-aware schema for:
+  - `tenants`
+  - `users`
+  - `leads`
+  - `templates`
+  - `campaigns`
+  - `messages`
+- Tenant/status/message indexes for faster CRM lookups.
+
+## 2) Runtime stack and infrastructure
+
+- Root `docker-compose.yml` orchestrates API, worker, Postgres, Redis, Kafka, NGINX, and optional Cloudflared.
+- `infra/` contains reverse proxy, cert, tunnel, panel, backup, and monitoring support assets.
+- `k8s/` and `infrastructure/` preserve Kubernetes and policy tooling for future deployment paths.
+
+## 3) Preserved supporting source modules
 
 - `landing/`: original landing page React app.
 - `backend-node/`: Express checkout and webhook demo backend.
 - `api/`: auxiliary FastAPI + Stripe integration example.
 - `ai-agent/`: automation/agent module.
-- `billing/`: Stripe helper utilities.
+- `billing/`: standalone Stripe helper utilities.
 - `worker/`: additional worker implementation.
 - `docker/`: extra Dockerfiles.
-- `k8s/`: Kubernetes manifests.
 - `monitoring/`: Prometheus configuration.
 - `security/`: shared middleware/security helpers.
-- `viral-content/`: content templates.
+- `viral-content/`: content templates and TikTok scripting material.
 
-## 3) Operational Tooling
+## 4) Operational tooling
 
 - `installer/install.sh`: shared modular installer that prepares the full stack in system or project mode.
 - `installer/lib/*.sh`: reusable shell modules for logging, runtime setup, env generation, TLS, and stack staging.

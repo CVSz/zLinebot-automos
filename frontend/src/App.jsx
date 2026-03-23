@@ -3,6 +3,7 @@ import CTA from "./components/CTA";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
+import DashboardPage from "./pages/DashboardPage";
 
 function resolveRoute(pathname) {
   if (pathname.startsWith("/signup")) {
@@ -11,6 +12,10 @@ function resolveRoute(pathname) {
 
   if (pathname.startsWith("/login")) {
     return "login";
+  }
+
+  if (pathname.startsWith("/dashboard")) {
+    return "dashboard";
   }
 
   return "landing";
@@ -24,7 +29,8 @@ export default function App() {
       {route === "landing" ? <LandingPage /> : null}
       {route === "signup" ? <SignupPage /> : null}
       {route === "login" ? <LoginPage /> : null}
-      <CTA />
+      {route === "dashboard" ? <DashboardPage /> : null}
+      {route !== "dashboard" ? <CTA /> : null}
     </div>
   );
 }

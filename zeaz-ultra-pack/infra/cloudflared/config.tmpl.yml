@@ -1,0 +1,9 @@
+tunnel: __TUNNEL_ID__
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: cme.zeaz.dev
+    service: https://nginx:443
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404

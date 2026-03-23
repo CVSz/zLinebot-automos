@@ -134,6 +134,26 @@ services:
     cpus: 0.75
     networks: [internal, public]
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["cloudflare"]
+    env_file:
+      - ../.env
+    depends_on:
+      nginx:
+        condition: service_healthy
+    command: >-
+      sh -c "sed 's|__TUNNEL_ID__|'"${CLOUDFLARED_TUNNEL_ID}"'|g' /etc/cloudflared/config.tmpl.yml > /tmp/config.yml
+      && cloudflared tunnel --no-autoupdate --config /tmp/config.yml run"
+    volumes:
+      - ./cloudflared/config.tmpl.yml:/etc/cloudflared/config.tmpl.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    restart: always
+    mem_limit: 256m
+    cpus: 0.5
+    networks: [public]
+
+
 volumes:
   db_data:
 

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# ZEAZ Ultimate SaaS V2 - Single-file installer
+# zLineBot-automos Full Stack - Single-file installer
 # Target: Ubuntu 24.04 VM (VMware 16GB RAM / 300GB NVMe)
 # Installs: Docker stack (API, Worker, Postgres, Redis, Kafka, NGINX panels)
 # Usage:
-#   sudo bash zeaz_ai_full_stack_installer.sh --domain zeaz.local
+#   sudo bash zeaz_ai_full_stack_installer.sh --domain zlinebot-automos.local
 
 set -euo pipefail
 
 DOMAIN=""
 CERT_EMAIL=""
-APP_DIR="/opt/zeaz-v3"
+APP_DIR="/opt/zlinebot-automos"
 EXPORT_ZIP="false"
 BUILD_FULL_PACK="true"
 
@@ -57,7 +57,7 @@ DB_PASS="$(openssl rand -hex 32)"
 REDIS_PASS="$(openssl rand -hex 32)"
 JWT_SECRET_CURRENT="$(openssl rand -hex 48)"
 JWT_SECRET_PREVIOUS=""
-KAFKA_USER="zeaz_app"
+KAFKA_USER="zlinebot_app"
 KAFKA_PASS="$(openssl rand -hex 24)"
 ADMIN_PASS="$(openssl rand -base64 18)"
 
@@ -67,7 +67,7 @@ DB_PASS=${DB_PASS}
 REDIS_PASS=${REDIS_PASS}
 TRUST_PROXY=true
 REAL_IP_HEADER=X-Forwarded-For
-DATABASE_URL=postgresql://zeaz:${DB_PASS}@db:5432/zeaz
+DATABASE_URL=postgresql://zlinebot:${DB_PASS}@db:5432/zlinebot_automos
 JWT_SECRET=${JWT_SECRET_CURRENT}
 JWT_SECRET_CURRENT=${JWT_SECRET_CURRENT}
 JWT_SECRET_PREVIOUS=${JWT_SECRET_PREVIOUS}
@@ -83,7 +83,7 @@ ENVFILE
 chmod 600 "$APP_DIR/.env"
 
 cat > "$APP_DIR/api/api.env" <<ENVFILE
-DATABASE_URL=postgresql://zeaz:${DB_PASS}@db:5432/zeaz
+DATABASE_URL=postgresql://zlinebot:${DB_PASS}@db:5432/zlinebot_automos
 JWT_SECRET=${JWT_SECRET_CURRENT}
 JWT_SECRET_CURRENT=${JWT_SECRET_CURRENT}
 JWT_SECRET_PREVIOUS=${JWT_SECRET_PREVIOUS}
@@ -108,7 +108,7 @@ ENVFILE
 chmod 600 "$APP_DIR/api/api.env"
 
 cat > "$APP_DIR/worker/worker.env" <<ENVFILE
-DATABASE_URL=postgresql://zeaz:${DB_PASS}@db:5432/zeaz
+DATABASE_URL=postgresql://zlinebot:${DB_PASS}@db:5432/zlinebot_automos
 KAFKA_BROKER=kafka:9092
 KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
 KAFKA_SASL_MECHANISM=PLAIN
@@ -505,7 +505,7 @@ class CircuitBreaker:
             raise
 
 cb = CircuitBreaker()
-app = FastAPI(title="ZEAZ SaaS API")
+app = FastAPI(title="zLineBot-automos API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "https://localhost").split(",") if o.strip()],
@@ -890,7 +890,7 @@ def create_checkout(body: CheckoutIn, claims=Depends(authz)):
         line_items=[{
             "price_data": {
                 "currency": "usd",
-                "product_data": {"name": "ZEAZ API Plan"},
+                "product_data": {"name": "zLineBot-automos API Plan"},
                 "unit_amount": body.price_cents,
             },
             "quantity": 1,
@@ -1351,14 +1351,14 @@ services:
     restart: always
     command: ["postgres", "-c", "max_connections=100"]
     environment:
-      POSTGRES_DB: zeaz
-      POSTGRES_USER: zeaz
+      POSTGRES_DB: zlinebot_automos
+      POSTGRES_USER: zlinebot
       POSTGRES_PASSWORD: ${DB_PASS}
     volumes:
       - db_data:/var/lib/postgresql/data
       - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zeaz -d zeaz"]
+      test: ["CMD-SHELL", "pg_isready -U zlinebot -d zlinebot_automos"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -1526,28 +1526,28 @@ cat > "$APP_DIR/k8s/namespace.yaml" <<'YAML'
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: zeaz
+  name: zlinebot-automos
 YAML
 
 cat > "$APP_DIR/k8s/api.yaml" <<'YAML'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: zeaz-api
-  namespace: zeaz
+  name: zlinebot-automos-api
+  namespace: zlinebot-automos
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: zeaz-api
+      app: zlinebot-automos-api
   template:
     metadata:
       labels:
-        app: zeaz-api
+        app: zlinebot-automos-api
     spec:
       containers:
         - name: api
-          image: zeaz/api:latest
+          image: zlinebot-automos/api:latest
           ports:
             - containerPort: 8000
           resources:
@@ -1561,11 +1561,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: zeaz-api
-  namespace: zeaz
+  name: zlinebot-automos-api
+  namespace: zlinebot-automos
 spec:
   selector:
-    app: zeaz-api
+    app: zlinebot-automos-api
   ports:
     - protocol: TCP
       port: 80
@@ -1576,21 +1576,21 @@ cat > "$APP_DIR/k8s/worker.yaml" <<'YAML'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: zeaz-worker
-  namespace: zeaz
+  name: zlinebot-automos-worker
+  namespace: zlinebot-automos
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: zeaz-worker
+      app: zlinebot-automos-worker
   template:
     metadata:
       labels:
-        app: zeaz-worker
+        app: zlinebot-automos-worker
     spec:
       containers:
         - name: worker
-          image: zeaz/worker:latest
+          image: zlinebot-automos/worker:latest
           resources:
             requests:
               cpu: "200m"
@@ -1604,13 +1604,13 @@ cat > "$APP_DIR/k8s/hpa.yaml" <<'YAML'
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: zeaz-api-hpa
-  namespace: zeaz
+  name: zlinebot-automos-api-hpa
+  namespace: zlinebot-automos
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: zeaz-api
+    name: zlinebot-automos-api
   minReplicas: 2
   maxReplicas: 10
   metrics:
@@ -1626,19 +1626,19 @@ cat > "$APP_DIR/k8s/ingress.yaml" <<'YAML'
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: zeaz-ingress
-  namespace: zeaz
+  name: zlinebot-automos-ingress
+  namespace: zlinebot-automos
 spec:
   ingressClassName: traefik
   rules:
-    - host: zeaz.local
+    - host: zlinebot-automos.local
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: zeaz-api
+                name: zlinebot-automos-api
                 port:
                   number: 80
 YAML
@@ -1656,7 +1656,7 @@ chmod +x "$APP_DIR/k8s/deploy.sh"
 
 cat > "$APP_DIR/frontend/package.json" <<'JSON'
 {
-  "name": "zeaz-dashboard",
+  "name": "zlinebot-automos-dashboard",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -1708,11 +1708,11 @@ cat > "$APP_DIR/backup/backup.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 TS=$(date +%F_%H-%M)
-FILE="/opt/zeaz-v3/backup/db_${TS}.sql.gz"
+FILE="/opt/zlinebot-automos/backup/db_${TS}.sql.gz"
 ENCRYPTED_FILE="${FILE}.enc"
-BACKUP_KEY_FILE="/opt/zeaz-v3/backup/.backup_key"
-DB_CONTAINER=$(docker compose -f /opt/zeaz-v3/infra/docker-compose.yml ps -q db)
-docker exec "$DB_CONTAINER" pg_dump -U zeaz zeaz | gzip > "$FILE"
+BACKUP_KEY_FILE="/opt/zlinebot-automos/backup/.backup_key"
+DB_CONTAINER=$(docker compose -f /opt/zlinebot-automos/infra/docker-compose.yml ps -q db)
+docker exec "$DB_CONTAINER" pg_dump -U zlinebot zlinebot_automos | gzip > "$FILE"
 test -s "$FILE"
 if [[ ! -f "$BACKUP_KEY_FILE" ]]; then
   umask 077
@@ -1722,7 +1722,7 @@ openssl enc -aes-256-cbc -pbkdf2 -salt -in "$FILE" -out "$ENCRYPTED_FILE" -pass 
 rm -f "$FILE"
 test -s "$ENCRYPTED_FILE"
 openssl enc -d -aes-256-cbc -pbkdf2 -in "$ENCRYPTED_FILE" -pass "file:${BACKUP_KEY_FILE}" | gunzip -c | head >/dev/null
-find /opt/zeaz-v3/backup -type f -mtime +7 -delete
+find /opt/zlinebot-automos/backup -type f -mtime +7 -delete
 BASH
 chmod +x "$APP_DIR/backup/backup.sh"
 
@@ -1739,7 +1739,7 @@ cd "$APP_DIR/infra"
 cp "$APP_DIR/.env" "$APP_DIR/infra/.env"
 docker compose up -d --build
 log "Waiting for DB..."
-until docker compose exec -T db pg_isready -U zeaz -d zeaz >/dev/null 2>&1; do
+until docker compose exec -T db pg_isready -U zlinebot -d zlinebot_automos >/dev/null 2>&1; do
   sleep 2
 done
 
@@ -1788,7 +1788,7 @@ ufw --force enable
 (crontab -l 2>/dev/null; echo "0 */6 * * * ${APP_DIR}/backup/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "*/5 * * * * ${APP_DIR}/monitor/health.sh") | crontab -
 
-cat > /etc/logrotate.d/zeaz <<EOF
+cat > /etc/logrotate.d/zlinebot-automos <<EOF
 ${APP_DIR}/logs/*.log {
   daily
   rotate 7
@@ -1798,9 +1798,9 @@ ${APP_DIR}/logs/*.log {
 }
 EOF
 
-cat > /etc/systemd/system/zeaz.service <<EOF
+cat > /etc/systemd/system/zlinebot-automos.service <<EOF
 [Unit]
-Description=ZEAZ Stack
+Description=zLineBot-automos Stack
 After=docker.service
 Requires=docker.service
 
@@ -1816,7 +1816,7 @@ TimeoutStartSec=0
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable zeaz
+systemctl enable zlinebot-automos
 
 if [[ -n "$CERT_EMAIL" && "$DOMAIN" != "localhost" && "$DOMAIN" != *.local ]]; then
   (crontab -l 2>/dev/null; echo "0 2 * * * certbot renew --quiet && docker compose -f ${APP_DIR}/infra/docker-compose.yml restart nginx") | crontab -
@@ -1824,7 +1824,7 @@ fi
 
 if [[ "$EXPORT_ZIP" == "true" ]]; then
   log "[7/8] Export project archive"
-  (cd /opt && zip -rq zeaz-v3.zip zeaz-v3)
+  (cd /opt && zip -rq zlinebot-automos.zip zlinebot-automos)
 fi
 
 log "[8/8] Completed"
@@ -1852,6 +1852,6 @@ NOTE: For trusted TLS, rerun with --cert-email admin@your-domain on a publicly-r
 NOTE: Bootstrap admin user is created with username 'admin' and generated password '${ADMIN_PASS}' (rotate immediately).
 API-specific secrets: ${APP_DIR}/api/api.env
 Worker-specific secrets: ${APP_DIR}/worker/worker.env
-ZIP export: $( [[ "$EXPORT_ZIP" == "true" ]] && echo "/opt/zeaz-v3.zip" || echo "disabled (use --export-zip)" )
+ZIP export: $( [[ "$EXPORT_ZIP" == "true" ]] && echo "/opt/zlinebot-automos.zip" || echo "disabled (use --export-zip)" )
 K8s full pack: $( [[ "$BUILD_FULL_PACK" == "true" ]] && echo "${APP_DIR}/k8s (apply with ./deploy.sh)" || echo "disabled (--skip-full-pack used)" )
 MSG

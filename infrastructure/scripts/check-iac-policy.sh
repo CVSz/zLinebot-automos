@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="$ROOT_DIR/.bin"
-K8S_DIR="$ROOT_DIR/zeaz-ultra/k8s"
+K8S_DIR="$ROOT_DIR/k8s"
 OPA_POLICY="$ROOT_DIR/infrastructure/policies/opa/k8s-security.rego"
 KYVERNO_POLICY="$ROOT_DIR/infrastructure/policies/kyverno/require-baseline.yaml"
 

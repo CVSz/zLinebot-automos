@@ -1,70 +1,65 @@
-# zLine Repository Overview
+# zLineBot-automos
 
-zLine is a multi-project repository containing three major deliverables:
+zLineBot-automos is now organized as a single root-level full-stack project.
+The repository has been flattened so the main application services, deployment assets,
+and auxiliary source modules all live directly under the project root instead of being
+split between `zeaz-ultra/` and `zeaz-ultra-pack/`.
 
-1. **ZEAZ Ultra Landing** (`zeaz-ultra/`): lightweight React + Vite landing experience with Stripe checkout and demo API.
-2. **ZEAZ Ultra Pack** (`zeaz-ultra-pack/`): deploy-ready full-stack platform (React + FastAPI + worker + Kafka/Redis/Postgres + NGINX + optional Cloudflared).
-3. **Infrastructure Policy Toolkit** (`infrastructure/`): IaC policy checks and safe CI auto-remediation scripts.
-
-For a complete feature inventory, see **[FEATURES.md](./FEATURES.md)**.
-
-## Repository Structure
+## Root Project Layout
 
 ```text
 /workspace/zLine
-├─ zeaz-ultra/          # Landing + Stripe checkout + demo chat + viral content scripts
-├─ zeaz-ultra-pack/     # Full stack app + infra + backup + health + cloudflare tunnel support
-└─ infrastructure/      # OPA + Kyverno policy checks and CI auto-fix scripts
+├─ frontend/         # Primary React + Vite web app
+├─ backend/          # FastAPI API, worker, and database bootstrap
+├─ infra/            # Docker, NGINX, backup, health, and Cloudflared assets
+├─ docker-compose.yml# Root stack entrypoint used by installers/service scripts
+├─ landing/          # Legacy landing experience preserved as a root module
+├─ backend-node/     # Node checkout/webhook demo backend preserved as a root module
+├─ api/              # Auxiliary FastAPI + Stripe demo API module
+├─ ai-agent/         # Agent integration code
+├─ billing/          # Billing/Stripe helpers
+├─ docker/           # Extra image definitions
+├─ k8s/              # Kubernetes manifests
+├─ monitoring/       # Monitoring configuration
+├─ security/         # Shared security middleware/utilities
+├─ scripts/          # Image build/deploy helper scripts
+├─ viral-content/    # Marketing content assets
+└─ infrastructure/   # IaC policy tooling and CI remediation scripts
 ```
 
-## Quick Start by Project
+## Quick Start
 
-### 1) ZEAZ Ultra Landing
+1. Generate the root runtime environment.
 
 ```bash
-cd zeaz-ultra
-npm install
-npm run dev
+./gen-secrets.sh zlinebot-automos.local admin@zlinebot-automos.local
 ```
 
-Optional backend services:
+2. Start the stack from the repository root.
 
 ```bash
-npm run backend
-npm run webhook
+docker compose up -d --build
 ```
 
-### 2) ZEAZ Ultra Pack
+3. Useful local entrypoints:
 
-```bash
-cd zeaz-ultra-pack
-./gen-secrets.sh zeaz.dev admin@zeaz.dev
-cd infra
-docker compose --env-file ../.env up -d --build
-```
+- Web app: `https://<host>/`
+- API health: `https://<host>/api/health`
+- Admin panel: `https://<host>/admin/`
+- User panel: `https://<host>/user/`
+- DevOps panel: `https://<host>/devops/`
 
-### 3) Infrastructure Policy Toolkit
+## Supporting Modules
 
-```bash
-./infrastructure/scripts/check-iac-policy.sh
-./infrastructure/scripts/auto-fix-pipeline.sh
-```
-
-## Core Capabilities (High-Level)
-
-- Marketing landing flows with CTA funnels and interactive chat demo.
-- Stripe subscription checkout + webhook handling.
-- FastAPI auth and chat endpoints.
-- Event-driven worker processing with Kafka and DLQ fallback.
-- Containerized platform with health checks, resource limits, and network segmentation.
-- NGINX reverse proxy with TLS, route segmentation, and optional Cloudflare Tunnel ingress.
-- Operational scripts for encrypted backups and health monitoring.
-- CI policy enforcement for Kubernetes security baselines.
+- `landing/`: preserved React landing app source.
+- `backend-node/`: preserved Express checkout + webhook sample.
+- `api/`, `billing/`, `worker/`, `docker/`, `k8s/`, and `monitoring/`: preserved supporting services and deployment assets.
+- `infrastructure/`: OPA/Kyverno policy tooling for Kubernetes manifests.
 
 ## Documentation Index
 
-- [FEATURES.md](./FEATURES.md): Full feature-by-feature documentation.
-- [CHANGELOG.md](./CHANGELOG.md): Consolidated project changelog.
-- [zeaz-ultra/README.md](./zeaz-ultra/README.md): Landing app details.
-- [zeaz-ultra-pack/README.md](./zeaz-ultra-pack/README.md): Deploy-ready stack details.
-- [infrastructure/README.md](./infrastructure/README.md): Policy tooling details.
+- [FEATURES.md](./FEATURES.md)
+- [CHANGELOG.md](./CHANGELOG.md)
+- [infrastructure/README.md](./infrastructure/README.md)
+- [infra/cloudflared/README.md](./infra/cloudflared/README.md)
+- [infra/certs/README.md](./infra/certs/README.md)

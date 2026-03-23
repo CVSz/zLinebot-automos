@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zlinebot-automos-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - zlinebot-automos.yourdomain.com
+      secretName: zlinebot-automos-tls
+  rules:
+    - host: zlinebot-automos.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zlinebot-automos-api
+                port:
+                  number: 8000

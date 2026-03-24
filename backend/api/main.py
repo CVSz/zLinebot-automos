@@ -38,6 +38,7 @@ LINE_API_BASE = "https://api.line.me/v2/bot/message"
 THAI_PHONE_RE = re.compile(r"(0\d{8,9})")
 NAME_RE = re.compile(r"(?:ชื่อ|name)\s*[:：]?\s*([^\n,]+)", re.IGNORECASE)
 STATUS_ORDER = ["new", "cold", "warm", "hot", "closed"]
+STATUS_SET = set(STATUS_ORDER)
 
 security = HTTPBearer(auto_error=False)
 stripe.api_key = STRIPE_SECRET_KEY or None
@@ -293,6 +294,21 @@ def extract_name(text: str) -> str | None:
     return None
 
 
+def clean_text(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def normalize_status(status: str | None, *, allow_blank: bool = False) -> str | None:
+    if status is None:
+        return None
+
+    normalized = status.strip().lower()
+    if not normalized and allow_blank:
+        return None
+    if normalized not in STATUS_SET:
+        raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(STATUS_ORDER)}")
+    return normalized
+
 
 def calculate_score(text: str, phone: str | None) -> int:
     lowered = text.lower()
@@ -517,7 +533,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.session_factory = session_factory
 
-    if urlparse(database_url or DEFAULT_DATABASE_URL).scheme == "sqlite":
+    if database_url is not None and urlparse(database_url).scheme == "sqlite":
         Base.metadata.create_all(bind=engine)
 
     app.add_middleware(
@@ -550,14 +566,21 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.post("/api/register")
     def register(payload: AuthPayload, session: Annotated[Session, Depends(db_session)]):
-        username = payload.username.strip()
+        username = clean_text(payload.username)
         password = payload.password
-        tenant_name = (payload.tenant_name or f"{username} Workspace").strip()
+        tenant_name = clean_text(payload.tenant_name) or f"{username} Workspace"
 
         if len(username) < 3:
             raise HTTPException(status_code=400, detail="username too short")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
+            raise HTTPException(
+                status_code=400,
+                detail="username may only contain letters, numbers, dots, dashes, and underscores",
+            )
         if len(password) < 8:
             raise HTTPException(status_code=400, detail="password must be at least 8 characters")
+        if len(tenant_name) < 3:
+            raise HTTPException(status_code=400, detail="workspace name too short")
 
         existing_user = session.scalar(select(User).where(User.username == username))
         if existing_user is not None:
@@ -595,7 +618,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.post("/api/login")
     def login(payload: AuthPayload, session: Annotated[Session, Depends(db_session)]):
-        username = payload.username.strip()
+        username = clean_text(payload.username)
         password = payload.password
 
         if not username or not password:
@@ -640,7 +663,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.post("/api/chat")
     def chat(payload: ChatPayload):
-        text = payload.message.strip()
+        text = clean_text(payload.message)
         if not text:
             raise HTTPException(status_code=400, detail="message is required")
         return {"reply": generate_sales_reply(text)}
@@ -737,8 +760,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session: Annotated[Session, Depends(db_session)] = None,
     ):
         query = select(Lead).where(Lead.tenant_id == tenant_id)
-        if status:
-            query = query.where(Lead.status == status)
+        normalized_status = normalize_status(status, allow_blank=True)
+        if normalized_status:
+            query = query.where(Lead.status == normalized_status)
         query = query.order_by(Lead.updated_at.desc(), Lead.created_at.desc())
         leads = session.scalars(query).all()
         return [serialize_lead(lead) for lead in leads]
@@ -755,11 +779,12 @@ def create_app(database_url: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="lead not found")
 
         if payload.status is not None:
-            lead.status = payload.status
+            lead.status = normalize_status(payload.status)
         if payload.price is not None:
             lead.price = payload.price
-        lead.updated_at = datetime.now(timezone.utc)
-        lead.last_contact_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        lead.updated_at = now
+        lead.last_contact_at = now
         session.commit()
         session.refresh(lead)
         return {"ok": True, "lead": serialize_lead(lead)}
@@ -812,7 +837,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session: Annotated[Session, Depends(db_session)] = None,
         _: Annotated[User, Depends(require_role("admin", "superadmin"))] = None,
     ):
-        template = Template(tenant_id=tenant_id, name=payload.name.strip(), message=payload.message.strip())
+        name = clean_text(payload.name)
+        message = clean_text(payload.message)
+        if not name:
+            raise HTTPException(status_code=400, detail="template name is required")
+        if not message:
+            raise HTTPException(status_code=400, detail="template message is required")
+
+        template = Template(tenant_id=tenant_id, name=name, message=message)
         session.add(template)
         session.commit()
         session.refresh(template)
@@ -834,11 +866,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
         user: Annotated[User, Depends(require_role("admin", "superadmin"))],
         session: Annotated[Session, Depends(db_session)],
     ):
+        name = clean_text(payload.name) or "campaign"
+        message = clean_text(payload.message)
+        target_status = normalize_status(payload.target_status, allow_blank=True)
+        if not message:
+            raise HTTPException(status_code=400, detail="broadcast message is required")
+
         campaign = Campaign(
             tenant_id=user.tenant_id,
-            name=payload.name.strip() or "campaign",
-            message=payload.message.strip(),
-            target_status=payload.target_status,
+            name=name,
+            message=message,
+            target_status=target_status,
             delivery_status="queued",
         )
         session.add(campaign)

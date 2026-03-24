@@ -2,24 +2,56 @@ const jsonHeaders = {
   "Content-Type": "application/json"
 };
 
+const REQUEST_TIMEOUT_MS = 15000;
+
 function tenantHeader(tenantId) {
   return tenantId ? { "X-Tenant-Id": tenantId } : {};
 }
 
 async function parseResponse(response) {
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { detail: text };
+    }
+  }
 
   if (!response.ok) {
-    const message = data?.detail || `Request failed (${response.status})`;
+    const message = data?.detail || response.statusText || `Request failed (${response.status})`;
     throw new Error(message);
   }
 
   return data;
 }
 
+async function apiRequest(path, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(path, {
+      ...options,
+      signal: controller.signal
+    });
+
+    return parseResponse(response);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function apiPost(path, payload, options = {}) {
-  const response = await fetch(path, {
+  return apiRequest(path, {
     method: "POST",
     headers: {
       ...jsonHeaders,
@@ -28,23 +60,19 @@ async function apiPost(path, payload, options = {}) {
     },
     body: JSON.stringify(payload)
   });
-
-  return parseResponse(response);
 }
 
 async function apiGet(path, options = {}) {
-  const response = await fetch(path, {
+  return apiRequest(path, {
     headers: {
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
       ...tenantHeader(options.tenantId)
     }
   });
-
-  return parseResponse(response);
 }
 
 async function apiPatch(path, payload, options = {}) {
-  const response = await fetch(path, {
+  return apiRequest(path, {
     method: "PATCH",
     headers: {
       ...jsonHeaders,
@@ -53,8 +81,6 @@ async function apiPatch(path, payload, options = {}) {
     },
     body: JSON.stringify(payload)
   });
-
-  return parseResponse(response);
 }
 
 export function postRegister(payload) {

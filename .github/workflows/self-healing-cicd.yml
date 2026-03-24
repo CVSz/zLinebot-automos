@@ -99,6 +99,14 @@ jobs:
           set -euo pipefail
           PYTHONPATH=. pytest tests -vv --maxfail=1 --disable-warnings
 
+
+      - name: Run worker tests
+        id: worker_tests
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          pytest -q backend/worker/tests
+
       # ---------------------------
       # Python validation
       # ---------------------------
@@ -191,6 +199,7 @@ jobs:
           check python_deps "${{ steps.python_deps.outcome }}"
           check frontend_build "${{ steps.frontend_build.outcome }}"
           check api_tests "${{ steps.api_tests.outcome }}"
+          check worker_tests "${{ steps.worker_tests.outcome }}"
           check python_checks "${{ steps.python_checks.outcome }}"
           check compose "${{ steps.compose.outcome }}"
           check iac "${{ steps.iac.outcome }}"

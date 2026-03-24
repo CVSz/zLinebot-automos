@@ -1,7 +1,9 @@
 import base64
 import binascii
+import csv
 import hashlib
 import hmac
+import io
 import os
 import re
 import time
@@ -14,7 +16,7 @@ from urllib.parse import urlparse
 
 import requests
 import stripe
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt
@@ -452,7 +454,17 @@ def send_line_push(channel_token: str | None, user_id: str, text: str) -> None:
 
 
 def send_sheet_sync_stub(payload: list[str]) -> None:
-    _ = payload
+    webhook_url = clean_text(os.getenv("GOOGLE_SHEETS_WEBHOOK_URL"))
+    if not webhook_url:
+        return
+    try:
+        requests.post(
+            webhook_url,
+            json={"row": payload},
+            timeout=5,
+        ).raise_for_status()
+    except requests.RequestException:
+        pass
 
 
 
@@ -903,6 +915,36 @@ def create_app(database_url: str | None = None) -> FastAPI:
         query = query.order_by(Lead.updated_at.desc(), Lead.created_at.desc())
         leads = session.scalars(query).all()
         return [serialize_lead(lead) for lead in leads]
+
+    @app.get("/api/export/tiktok.csv")
+    def export_tiktok_csv(
+        tenant_id: Annotated[str, Depends(get_tenant_scope)] = "",
+        session: Annotated[Session, Depends(db_session)] = None,
+    ):
+        leads = session.scalars(
+            select(Lead).where(Lead.tenant_id == tenant_id).order_by(Lead.updated_at.desc(), Lead.created_at.desc())
+        ).all()
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["Name", "Phone", "Product", "Status", "Score", "User ID"])
+        for lead in leads:
+            writer.writerow(
+                [
+                    lead.name or "",
+                    lead.phone or "",
+                    lead.interest,
+                    lead.status,
+                    lead.score,
+                    lead.user_id,
+                ]
+            )
+
+        return Response(
+            content=buffer.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="tiktok-export.csv"'},
+        )
 
     @app.patch("/api/leads/{lead_id}")
     def update_lead(

@@ -9,6 +9,7 @@ on:
 
 env:
   PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 concurrency:
   group: self-healing-cicd-${{ github.ref }}
@@ -24,7 +25,7 @@ jobs:
       security-events: write
 
     outputs:
-      ci_failed: ${{ steps.gate.outputs.ci_failed }}
+      ci_failed: ${{ steps.gate.outputs.ci_failed || '1' }}
 
     steps:
       # ---------------------------
@@ -220,7 +221,7 @@ jobs:
   # ===================================
   self-healing:
     name: AI-assisted self-heal
-    if: failure() && needs.validate-and-build.outputs.ci_failed == '1' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: failure() && needs.validate-and-build.outputs.ci_failed != '0' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [validate-and-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20

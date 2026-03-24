@@ -292,3 +292,80 @@ def test_team_member_management_enforces_roles(tmp_path: Path):
     usernames = {member["username"] for member in team_list.json()}
     assert "teamadmin" in usernames
     assert "staff01" in usernames
+
+
+def test_tiktok_csv_export_returns_tenant_scoped_rows(tmp_path: Path):
+    client = make_client(tmp_path)
+    session = register_and_login(client, username="csvadmin")
+    headers = auth_headers(session["access_token"], session["user"]["tenant_id"])
+
+    lead_response = client.post(
+        f"/webhook/{session['user']['tenant_id']}",
+        json={
+            "events": [
+                {
+                    "replyToken": "reply-token",
+                    "source": {"userId": "u-csv"},
+                    "message": {"text": "ชื่อ Jane 0891234567 สนใจโปรรายเดือน"},
+                }
+            ]
+        },
+    )
+    assert lead_response.status_code == 200
+
+    export_response = client.get("/api/export/tiktok.csv", headers=headers)
+    assert export_response.status_code == 200
+    assert export_response.headers["content-type"].startswith("text/csv")
+    assert "attachment; filename=\"tiktok-export.csv\"" == export_response.headers["content-disposition"]
+    assert "Name,Phone,Product,Status,Score,User ID" in export_response.text
+    assert "u-csv" in export_response.text
+    assert "0891234567" in export_response.text
+
+
+def test_webhook_posts_sheet_sync_when_webhook_url_is_configured(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    session = register_and_login(client, username="sheetadmin")
+    tenant_id = session["user"]["tenant_id"]
+
+    posted = {}
+
+    class FakeResponse:
+        def __init__(self, payload=None):
+            self.payload = payload or {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    def fake_post(url, json=None, timeout=0, **_kwargs):
+        if "localhost:11434" in url:
+            return FakeResponse({"response": "ok"})
+        posted["url"] = url
+        posted["json"] = json
+        posted["timeout"] = timeout
+        return FakeResponse({})
+
+    monkeypatch.setenv("GOOGLE_SHEETS_WEBHOOK_URL", "https://example.com/sheets-hook")
+    monkeypatch.setattr("main.requests.post", fake_post)
+
+    response = client.post(
+        f"/webhook/{tenant_id}",
+        json={
+            "events": [
+                {
+                    "replyToken": "reply-token",
+                    "source": {"userId": "u-sheet"},
+                    "message": {"text": "ชื่อ Joy 0812345678 สนใจสินค้า"},
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert posted["url"] == "https://example.com/sheets-hook"
+    assert posted["timeout"] == 5
+    assert posted["json"]["row"][0] == tenant_id
+    assert posted["json"]["row"][1] == "u-sheet"
+    assert posted["json"]["row"][3] == "0812345678"

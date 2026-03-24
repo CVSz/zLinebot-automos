@@ -33,12 +33,24 @@ function readSession() {
 
 function actionsForStatus(status) {
   const index = pipeline.indexOf(status);
-
   if (index === -1) {
     return [];
   }
 
   return [pipeline[index - 1], pipeline[index + 1]].filter(Boolean);
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "—";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "—";
+  }
+
+  return parsed.toLocaleString();
 }
 
 export default function DashboardPage() {
@@ -50,21 +62,33 @@ export default function DashboardPage() {
   const [campaigns, setCampaigns] = useState([]);
   const [dailyRevenue, setDailyRevenue] = useState([]);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [leadSearch, setLeadSearch] = useState("");
+  const [leadSort, setLeadSort] = useState("updated_desc");
   const [templateDraft, setTemplateDraft] = useState({ name: "", message: "" });
   const [broadcastDraft, setBroadcastDraft] = useState({ name: "Promo Blast", message: "", target_status: "" });
-  const [feedback, setFeedback] = useState("");
+  const [feedback, setFeedback] = useState({ tone: "info", text: "" });
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastSyncAt, setLastSyncAt] = useState("");
 
   const token = session?.access_token;
   const tenantId = session?.user?.tenant_id;
 
+  const setError = useCallback((message) => {
+    setFeedback({ tone: "error", text: message || "Something went wrong." });
+  }, []);
+
+  const setSuccess = useCallback((message) => {
+    setFeedback({ tone: "success", text: message || "Done." });
+  }, []);
+
   const handleAuthFailure = useCallback((message) => {
-    setFeedback(message);
+    setError(message);
     localStorage.removeItem("zline.session");
     setSession(null);
     window.location.href = "/login";
-  }, []);
+  }, [setError]);
 
   const loadDashboard = useCallback(async (options = {}) => {
     if (!token || !tenantId) {
@@ -92,28 +116,67 @@ export default function DashboardPage() {
       setTemplates(templatesData);
       setCampaigns(campaignsData);
       setDailyRevenue(revenueData);
+      setLastSyncAt(new Date().toISOString());
+
       if (!options.keepFeedback) {
-        setFeedback("");
+        setFeedback({ tone: "info", text: "" });
       }
     } catch (error) {
-      if (error.message.toLowerCase().includes("credentials")) {
+      if ((error.message || "").toLowerCase().includes("credentials")) {
         handleAuthFailure(error.message);
         return;
       }
 
-      setFeedback(error.message);
+      setError(error.message);
     } finally {
       setLoading(false);
     }
-  }, [handleAuthFailure, tenantId, token]);
+  }, [handleAuthFailure, setError, tenantId, token]);
 
   useEffect(() => {
     loadDashboard();
   }, [loadDashboard]);
 
-  const visibleLeads = useMemo(() => (
-    statusFilter === "all" ? leads : leads.filter((lead) => lead.status === statusFilter)
-  ), [leads, statusFilter]);
+  useEffect(() => {
+    if (!autoRefresh || !token || !tenantId) {
+      return undefined;
+    }
+
+    const interval = setInterval(() => {
+      loadDashboard({ background: true, keepFeedback: true });
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [autoRefresh, loadDashboard, tenantId, token]);
+
+  const visibleLeads = useMemo(() => {
+    let filtered = statusFilter === "all" ? leads : leads.filter((lead) => lead.status === statusFilter);
+
+    if (leadSearch.trim()) {
+      const needle = leadSearch.trim().toLowerCase();
+      filtered = filtered.filter((lead) => (
+        [lead.name, lead.phone, lead.user_id, lead.interest]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(needle))
+      ));
+    }
+
+    return [...filtered].sort((a, b) => {
+      if (leadSort === "score_desc") {
+        return (b.score || 0) - (a.score || 0);
+      }
+      if (leadSort === "score_asc") {
+        return (a.score || 0) - (b.score || 0);
+      }
+
+      const aTime = new Date(a.updated_at || 0).getTime();
+      const bTime = new Date(b.updated_at || 0).getTime();
+      if (leadSort === "updated_asc") {
+        return aTime - bTime;
+      }
+      return bTime - aTime;
+    });
+  }, [leadSearch, leadSort, leads, statusFilter]);
 
   const revenuePeak = useMemo(() => Math.max(1, ...dailyRevenue.map((point) => point.revenue || 0)), [dailyRevenue]);
 
@@ -126,14 +189,14 @@ export default function DashboardPage() {
     setActionBusy(true);
     try {
       await action();
-      setFeedback(successMessage);
+      setSuccess(successMessage);
       await loadDashboard({ background: true, keepFeedback: true });
     } catch (error) {
-      setFeedback(error.message);
+      setError(error.message);
     } finally {
       setActionBusy(false);
     }
-  }, [loadDashboard]);
+  }, [loadDashboard, setError, setSuccess]);
 
   const updateLeadStatus = (leadId, status) => executeAction(
     () => patchLead(token, tenantId, leadId, { status }),
@@ -167,7 +230,7 @@ export default function DashboardPage() {
         window.location.href = data.url;
       }
     } catch (error) {
-      setFeedback(error.message);
+      setError(error.message);
     } finally {
       setActionBusy(false);
     }
@@ -193,6 +256,9 @@ export default function DashboardPage() {
     );
   }
 
+  const templateChars = templateDraft.message.length;
+  const broadcastChars = broadcastDraft.message.length;
+
   return (
     <section className="mx-auto max-w-7xl px-6 py-10">
       <header className="flex flex-col gap-4 rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl shadow-cyan-950/20 lg:flex-row lg:items-center lg:justify-between">
@@ -202,6 +268,7 @@ export default function DashboardPage() {
           <p className="mt-2 text-sm text-slate-400">
             Logged in as <span className="font-semibold text-slate-200">{profile?.username}</span> · {profile?.role} · subscription {profile?.subscription_status}
           </p>
+          <p className="mt-1 text-xs text-slate-500">Last synced: {formatDateTime(lastSyncAt)}</p>
         </div>
         <div className="flex flex-wrap gap-3">
           <button className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60" onClick={() => loadDashboard({ background: true, keepFeedback: true })} disabled={actionBusy}>
@@ -216,9 +283,22 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {feedback ? (
-        <div className="mt-4 rounded-xl border border-cyan-900 bg-cyan-950/40 px-4 py-3 text-sm text-cyan-100">{feedback}</div>
+      {feedback.text ? (
+        <div className={`mt-4 flex items-center justify-between gap-4 rounded-xl border px-4 py-3 text-sm ${feedback.tone === "error" ? "border-rose-900 bg-rose-950/40 text-rose-100" : "border-emerald-900 bg-emerald-950/40 text-emerald-100"}`}>
+          <span>{feedback.text}</span>
+          <button className="text-xs font-semibold opacity-80 hover:opacity-100" onClick={() => setFeedback({ tone: "info", text: "" })} type="button">
+            Dismiss
+          </button>
+        </div>
       ) : null}
+
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-300">
+        <label className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+          <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
+          Auto refresh every 30s
+        </label>
+        <span className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">Visible leads: {visibleLeads.length}</span>
+      </div>
 
       <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Total leads" value={stats?.total_leads ?? 0} />
@@ -229,21 +309,39 @@ export default function DashboardPage() {
 
       <div className="mt-8 grid gap-6 xl:grid-cols-[1.4fr_0.9fr]">
         <section className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-xl font-semibold text-white">Lead pipeline</h2>
               <p className="text-sm text-slate-400">Move leads across the funnel and monitor close-ready conversations.</p>
             </div>
-            <select
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-            >
-              <option value="all">All statuses</option>
-              {pipeline.map((status) => (
-                <option key={status} value={status}>{status}</option>
-              ))}
-            </select>
+            <div className="flex flex-wrap gap-2">
+              <input
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                value={leadSearch}
+                onChange={(event) => setLeadSearch(event.target.value)}
+                placeholder="Search lead, phone, note"
+              />
+              <select
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                value={leadSort}
+                onChange={(event) => setLeadSort(event.target.value)}
+              >
+                <option value="updated_desc">Newest update</option>
+                <option value="updated_asc">Oldest update</option>
+                <option value="score_desc">Highest score</option>
+                <option value="score_asc">Lowest score</option>
+              </select>
+              <select
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+              >
+                <option value="all">All statuses</option>
+                {pipeline.map((status) => (
+                  <option key={status} value={status}>{status}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="mt-6 grid gap-4 lg:grid-cols-5">
             {pipeline.map((status) => (
@@ -340,6 +438,10 @@ export default function DashboardPage() {
               onChange={(event) => setTemplateDraft((current) => ({ ...current, message: event.target.value }))}
               required
             />
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span>{templateChars} characters</span>
+              <span>Reusable in broadcast composer</span>
+            </div>
             <button className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={actionBusy}>
               Save template
             </button>
@@ -391,6 +493,7 @@ export default function DashboardPage() {
               onChange={(event) => setBroadcastDraft((current) => ({ ...current, message: event.target.value }))}
               required
             />
+            <div className="text-xs text-slate-400">{broadcastChars} characters</div>
             <button className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={actionBusy}>
               Queue broadcast
             </button>
@@ -412,7 +515,9 @@ export default function DashboardPage() {
                       <div className="font-semibold">{campaign.name}</div>
                       <div className="text-xs text-slate-400">{campaign.target_status || "all leads"}</div>
                     </td>
-                    <td className="px-3 py-3">{campaign.delivery_status}</td>
+                    <td className="px-3 py-3">
+                      <StatusBadge value={campaign.delivery_status} />
+                    </td>
                     <td className="px-3 py-3">{campaign.sent_count}</td>
                     <td className="px-3 py-3">{campaign.reply_count} ({campaign.reply_rate}%)</td>
                   </tr>
@@ -457,4 +562,14 @@ function EmptyState({ message }) {
       {message}
     </div>
   );
+}
+
+function StatusBadge({ value }) {
+  const style = value === "sent"
+    ? "border-emerald-700 bg-emerald-950/40 text-emerald-100"
+    : value === "failed"
+      ? "border-rose-700 bg-rose-950/40 text-rose-100"
+      : "border-amber-700 bg-amber-950/40 text-amber-100";
+
+  return <span className={`inline-flex rounded-full border px-2 py-1 text-xs ${style}`}>{value || "queued"}</span>;
 }

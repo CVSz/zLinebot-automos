@@ -2,6 +2,8 @@ const jsonHeaders = {
   "Content-Type": "application/json"
 };
 
+const REQUEST_TIMEOUT_MS = 15000;
+
 function tenantHeader(tenantId) {
   return tenantId ? { "X-Tenant-Id": tenantId } : {};
 }
@@ -19,7 +21,7 @@ async function parseResponse(response) {
   }
 
   if (!response.ok) {
-    const message = data?.detail || `Request failed (${response.status})`;
+    const message = data?.detail || response.statusText || `Request failed (${response.status})`;
     throw new Error(message);
   }
 
@@ -27,8 +29,25 @@ async function parseResponse(response) {
 }
 
 async function apiRequest(path, options = {}) {
-  const response = await fetch(path, options);
-  return parseResponse(response);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(path, {
+      ...options,
+      signal: controller.signal
+    });
+
+    return parseResponse(response);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function apiPost(path, payload, options = {}) {

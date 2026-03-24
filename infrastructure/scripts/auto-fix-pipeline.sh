@@ -11,15 +11,14 @@ done
 
 echo "[self-heal] Normalizing YAML style where possible"
 if command -v python3 >/dev/null 2>&1; then
-  python3 - <<'PY'
+  git ls-files '*.yml' '*.yaml' | python3 - <<'PY'
+import sys
 from pathlib import Path
 
-for yaml_path in Path('.').glob('**/*.yml'):
-    text = yaml_path.read_text(encoding='utf-8')
-    normalized = "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
-    if text != normalized:
-        yaml_path.write_text(normalized, encoding='utf-8')
-for yaml_path in Path('.').glob('**/*.yaml'):
+for raw_path in sys.stdin:
+    yaml_path = Path(raw_path.strip())
+    if not yaml_path.exists():
+        continue
     text = yaml_path.read_text(encoding='utf-8')
     normalized = "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
     if text != normalized:

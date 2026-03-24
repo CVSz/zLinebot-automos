@@ -13,3 +13,8 @@
 ./infrastructure/scripts/check-iac-policy.sh
 ./infrastructure/scripts/auto-fix-pipeline.sh
 ```
+
+## CI/CD audit
+
+- Self-healing pipeline problem inventory and remediation status:
+  - `docs/self-healing-cicd-problems.md`

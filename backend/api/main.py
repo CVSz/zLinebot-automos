@@ -54,6 +54,7 @@ class Tenant(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     line_channel_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    line_channel_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=20)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -241,9 +242,20 @@ def make_engine(database_url: str):
 
 async def verify_line_signature(request: Request, tenant: Tenant | None) -> None:
     signature = request.headers.get("x-line-signature")
-    secret = tenant.line_channel_token if tenant else None
-    if not signature or not secret:
+    secret = tenant.line_channel_secret if tenant else None
+    if not secret:
         return
+    if not signature:
+        raise HTTPException(status_code=401, detail="missing line signature")
+    body = await request.body()
+    expected = base64.b64encode(hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()).decode("utf-8")
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="invalid line signature")
+
+
+def resolve_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS") or os.getenv("CORS_ORIGINS") or "*"
+    return [origin.strip() for origin in raw.split(",") if origin.strip()] or ["*"]
 
 
 def hash_password(password: str) -> str:
@@ -538,7 +550,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),
+        allow_origins=resolve_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

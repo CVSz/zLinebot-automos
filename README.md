@@ -52,7 +52,7 @@ supporting modules that were already living in this repository.
 ### 1. Prepare local secrets
 
 ```bash
-./gen-secrets.sh zlinebot-automos.local admin@zlinebot-automos.local
+./gen-secrets.sh zeaz.dev admin@zeaz.dev
 ```
 
 ### 2. Start the full stack
@@ -64,18 +64,18 @@ docker compose up -d --build
 ### 3. Or use the installer
 
 ```bash
-sudo bash installer/install.sh --mode project --domain zlinebot-automos.local --app-dir ./zlinebot-automos-stack
+sudo bash installer/install.sh --mode project --domain zeaz.dev --app-dir ./zlinebot-automos-stack
 ```
 
 ## Useful local entrypoints
 
-- Web app / landing: `https://<host>/`
-- API health: `https://<host>/api/health`
+- Web app / landing: `https://app.<domain>/`
+- API health: `https://api.<domain>/api/health`
 - CRM auth API: `https://<host>/api/register` and `https://<host>/api/login`
-- Tenant webhook: `https://<host>/webhook/<tenant_id>`
-- Admin panel: `https://<host>/admin/`
-- User panel: `https://<host>/user/`
-- DevOps panel: `https://<host>/devops/`
+- Tenant webhook: `https://api.<domain>/webhook/<tenant_id>`
+- Admin panel: `https://app.<domain>/admin/`
+- User panel: `https://app.<domain>/user/`
+- DevOps panel: `https://app.<domain>/devops/`
 
 ## Core API surface
 
@@ -110,9 +110,12 @@ The current API and worker expect these environment variables in production:
 - `OLLAMA_URL` and `OLLAMA_MODEL` (optional)
 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`
 - `APP_BASE_URL`
+- `APP_HOST`
+- `API_HOST`
+- `WILDCARD_HOST` (optional)
 - `CORS_ALLOW_ORIGINS`
 
-Tenant-specific LINE channel tokens are stored in the `tenants.line_channel_token` column.
+Tenant-specific LINE credentials are stored in the `tenants.line_channel_token` and `tenants.line_channel_secret` columns.
 
 ## Supporting Modules
 

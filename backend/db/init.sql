@@ -2,9 +2,12 @@ CREATE TABLE IF NOT EXISTS tenants (
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   line_channel_token TEXT,
+  line_channel_secret TEXT,
   rate_limit_per_minute INTEGER NOT NULL DEFAULT 20,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS line_channel_secret TEXT;
 
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,

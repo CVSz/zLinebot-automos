@@ -50,6 +50,11 @@ generate_stack_env() {
   local app_dir="$1"
   local domain="$2"
   local cert_email="$3"
+  local app_host api_host wildcard_host cors_allow_origins
+  app_host="app.${domain}"
+  api_host="api.${domain}"
+  wildcard_host=""
+  cors_allow_origins="https://${app_host},https://${api_host}"
 
   local db_pass redis_pass jwt_secret_current kafka_user kafka_pass admin_pass
   db_pass="$(openssl rand -hex 32)"
@@ -71,6 +76,9 @@ ADMIN_PASS=${admin_pass}
 OPENAI_API_KEY=REPLACE
 CERT_EMAIL=${cert_email:-admin@${domain}}
 CLOUDFLARED_TUNNEL_ID=replace-with-your-tunnel-uuid
+APP_HOST=${app_host}
+API_HOST=${api_host}
+WILDCARD_HOST=${wildcard_host}
 DATABASE_URL=postgresql://zlinebot:${db_pass}@db:5432/zlinebot_automos
 REDIS_URL=redis://:${redis_pass}@redis:6379/0
 KAFKA_BROKER=kafka:9092
@@ -78,6 +86,7 @@ KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
 KAFKA_SASL_MECHANISM=PLAIN
 KAFKA_USERNAME=${kafka_user}
 KAFKA_PASSWORD=${kafka_pass}
+CORS_ALLOW_ORIGINS=${cors_allow_origins}
 ENV
   chmod 600 "${app_dir}/.env"
 
@@ -91,7 +100,7 @@ KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
 KAFKA_SASL_MECHANISM=PLAIN
 KAFKA_USERNAME=${kafka_user}
 KAFKA_PASSWORD=${kafka_pass}
-CORS_ORIGINS=https://${domain}
+CORS_ALLOW_ORIGINS=${cors_allow_origins}
 OPENAI_API_KEY=REPLACE
 ENV
 
@@ -112,8 +121,14 @@ configure_tls_assets() {
   local domain="$2"
   local cert_email="$3"
   local cert_dir="${app_dir}/infra/certs"
+  local app_host="app.${domain}"
+  local api_host="api.${domain}"
 
   mkdir -p "$cert_dir"
+
+  if [[ "$domain" == \** ]]; then
+    die "Wildcard domains must be terminated by an external TLS edge (for example Cloudflare) or provisioned with DNS challenge support."
+  fi
 
   if [[ -n "$cert_email" ]] && is_public_domain "$domain"; then
     log "Attempting Let's Encrypt certificate for ${domain}"
@@ -124,11 +139,11 @@ configure_tls_assets() {
       docker stop ${occupying_containers} >/dev/null
     fi
 
-    if certbot certonly --standalone --non-interactive --agree-tos -m "$cert_email" -d "$domain"; then
-      cp "/etc/letsencrypt/live/${domain}/fullchain.pem" "${cert_dir}/fullchain.pem"
-      cp "/etc/letsencrypt/live/${domain}/privkey.pem" "${cert_dir}/privkey.pem"
+    if certbot certonly --standalone --non-interactive --agree-tos -m "$cert_email" -d "$app_host" -d "$api_host"; then
+      cp "/etc/letsencrypt/live/${app_host}/fullchain.pem" "${cert_dir}/fullchain.pem"
+      cp "/etc/letsencrypt/live/${app_host}/privkey.pem" "${cert_dir}/privkey.pem"
       chmod 600 "${cert_dir}/privkey.pem"
-      log "Issued Let's Encrypt certificate for ${domain}"
+      log "Issued Let's Encrypt certificate for ${app_host} and ${api_host}"
       return 0
     fi
 
@@ -141,7 +156,8 @@ configure_tls_assets() {
     -keyout "${cert_dir}/privkey.pem" \
     -out "${cert_dir}/fullchain.pem" \
     -days 365 \
-    -subj "/CN=${domain}"
+    -subj "/CN=${app_host}" \
+    -addext "subjectAltName=DNS:${app_host},DNS:${api_host}"
   chmod 600 "${cert_dir}/privkey.pem"
 }
 

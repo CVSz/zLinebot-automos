@@ -120,6 +120,13 @@ services:
     build:
       context: ..
       dockerfile: infra/nginx.Dockerfile
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      APP_HOST: ${APP_HOST:-app.zlinebot-automos.local}
+      API_HOST: ${API_HOST:-api.zlinebot-automos.local}
+      WILDCARD_HOST: ${WILDCARD_HOST:-}
     depends_on:
       api:
         condition: service_healthy
@@ -145,8 +152,14 @@ services:
     depends_on:
       nginx:
         condition: service_healthy
+    environment:
+      APP_HOST: ${APP_HOST:-app.zlinebot-automos.local}
+      API_HOST: ${API_HOST:-api.zlinebot-automos.local}
+      CLOUDFLARED_TUNNEL_ID: ${CLOUDFLARED_TUNNEL_ID}
     command: >-
-      sh -c "sed 's|__TUNNEL_ID__|'"${CLOUDFLARED_TUNNEL_ID}"'|g' /etc/cloudflared/config.tmpl.yml > /tmp/config.yml
+      sh -c "sed -e 's|__TUNNEL_ID__|'\"${CLOUDFLARED_TUNNEL_ID}\"'|g'
+      -e 's|__APP_HOST__|'\"${APP_HOST}\"'|g'
+      -e 's|__API_HOST__|'\"${API_HOST}\"'|g' /etc/cloudflared/config.tmpl.yml > /tmp/config.yml
       && cloudflared tunnel --no-autoupdate --config /tmp/config.yml run"
     volumes:
       - ./cloudflared/config.tmpl.yml:/etc/cloudflared/config.tmpl.yml:ro

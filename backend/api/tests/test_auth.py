@@ -1,11 +1,14 @@
 import os
 import subprocess
 import sys
+import base64
+import hashlib
+import hmac
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from main import create_app
+from main import Tenant, create_app
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -183,6 +186,43 @@ def test_import_does_not_touch_database_at_module_import(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+def test_webhook_rejects_invalid_line_signature_when_secret_is_configured(tmp_path: Path):
+    client = make_client(tmp_path)
+    session = client.app.state.session_factory()
+    session.add(Tenant(id="tenant-1", name="Tenant 1", line_channel_secret="top-secret"))
+    session.commit()
+    session.close()
+
+    response = client.post(
+        "/webhook/tenant-1",
+        headers={"x-line-signature": "invalid"},
+        json={"events": [{"replyToken": "reply", "source": {"userId": "u1"}, "message": {"text": "hello"}}]},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid line signature"
+
+
+def test_webhook_accepts_valid_line_signature_when_secret_is_configured(tmp_path: Path):
+    client = make_client(tmp_path)
+    session = client.app.state.session_factory()
+    session.add(Tenant(id="tenant-2", name="Tenant 2", line_channel_secret="top-secret"))
+    session.commit()
+    session.close()
+
+    payload = b'{"events":[{"replyToken":"reply","source":{"userId":"u1"},"message":{"text":"hello"}}]}'
+    signature = base64.b64encode(hmac.new(b"top-secret", payload, hashlib.sha256).digest()).decode("utf-8")
+
+    response = client.post(
+        "/webhook/tenant-2",
+        headers={"x-line-signature": signature, "content-type": "application/json"},
+        content=payload,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
 
 
 def test_import_with_default_sqlite_does_not_create_db_file(tmp_path: Path):

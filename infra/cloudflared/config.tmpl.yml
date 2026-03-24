@@ -2,11 +2,11 @@ tunnel: __TUNNEL_ID__
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-  - hostname: '*.zlinebot-automos.local'
+  - hostname: __APP_HOST__
     service: https://nginx:443
     originRequest:
       noTLSVerify: true
-  - hostname: api.zlinebot-automos.local
+  - hostname: __API_HOST__
     service: https://nginx:443
     originRequest:
       noTLSVerify: true

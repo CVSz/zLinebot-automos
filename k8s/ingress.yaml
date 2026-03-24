@@ -8,10 +8,21 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - zlinebot-automos.yourdomain.com
-      secretName: zlinebot-automos-tls
+        - app.zeaz.dev
+        - api.zeaz.dev
+      secretName: zeaz-dev-tls
   rules:
-    - host: zlinebot-automos.yourdomain.com
+    - host: app.zeaz.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zlinebot-automos-frontend
+                port:
+                  number: 80
+    - host: api.zeaz.dev
       http:
         paths:
           - path: /

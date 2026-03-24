@@ -489,6 +489,14 @@ def serialize_team_member(user: User) -> dict:
 
 
 def queue_broadcast_event(payload: dict) -> bool:
+    if REDIS_URL:
+        try:
+            redis = Redis.from_url(REDIS_URL, decode_responses=True)
+            redis.rpush("queue:broadcasts", __import__("json").dumps(payload))
+            return True
+        except Exception:
+            pass
+
     try:
         producer = KafkaProducer(
             bootstrap_servers=KAFKA_BROKER,
@@ -918,6 +926,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/api/export/tiktok.csv")
     def export_tiktok_csv(
+        _: Annotated[User, Depends(require_role("admin", "superadmin"))],
         tenant_id: Annotated[str, Depends(get_tenant_scope)] = "",
         session: Annotated[Session, Depends(db_session)] = None,
     ):
@@ -970,7 +979,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/api/stats")
     def get_stats(
-        user: Annotated[User, Depends(require_role("admin", "staff", "superadmin"))],
+        user: Annotated[User, Depends(require_role("admin", "superadmin"))],
         session: Annotated[Session, Depends(db_session)],
     ):
         tenant_id = user.tenant_id

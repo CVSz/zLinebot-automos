@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import requests
 from kafka import KafkaConsumer, KafkaProducer
+from redis import Redis
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -17,6 +18,7 @@ LOGGER = logging.getLogger("zline.worker")
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 DEFAULT_DATABASE_URL = "postgresql://zlinebot:zlinebot@db:5432/zlinebot_automos"
 DEFAULT_KAFKA_BROKER = "kafka:9092"
+DEFAULT_REDIS_URL = "redis://redis:6379/0"
 WORKER_TOPICS = ("events.messages", "events.broadcasts")
 
 
@@ -25,6 +27,8 @@ class WorkerConfig:
     database_url: str
     kafka_broker: str
     kafka_group_id: str
+    redis_url: str | None
+    redis_queue_key: str
     line_push_timeout: int
     idle_sleep_seconds: float
 
@@ -34,6 +38,8 @@ class WorkerConfig:
             database_url=os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL),
             kafka_broker=os.getenv("KAFKA_BROKER", DEFAULT_KAFKA_BROKER),
             kafka_group_id=os.getenv("KAFKA_GROUP_ID", "zline-worker"),
+            redis_url=os.getenv("REDIS_URL", DEFAULT_REDIS_URL),
+            redis_queue_key=os.getenv("REDIS_BROADCAST_QUEUE", "queue:broadcasts"),
             line_push_timeout=int(os.getenv("LINE_PUSH_TIMEOUT_SECONDS", "10")),
             idle_sleep_seconds=float(os.getenv("WORKER_IDLE_SLEEP_SECONDS", "1")),
         )
@@ -61,6 +67,7 @@ class Worker:
             value_deserializer=lambda message: json.loads(message.decode("utf-8")),
             consumer_timeout_ms=1000,
         )
+        self.redis = Redis.from_url(config.redis_url, decode_responses=True) if config.redis_url else None
         self.running = True
 
     @staticmethod
@@ -82,11 +89,32 @@ class Worker:
                 self.producer.flush(timeout=5)
                 self.producer.close(timeout=5)
             finally:
+                if self.redis is not None:
+                    self.redis.close()
                 self.engine.dispose()
 
     def run(self) -> None:
         LOGGER.info("worker started", extra={"topics": WORKER_TOPICS, "group_id": self.config.kafka_group_id})
         while self.running:
+            if self.redis is not None:
+                redis_record = self.redis.brpop(self.config.redis_queue_key, timeout=1)
+                if redis_record:
+                    _, raw_payload = redis_record
+                    processed = False
+                    try:
+                        payload = json.loads(raw_payload)
+                        self.process_record("events.broadcasts", payload)
+                        processed = True
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.exception("failed to process redis broadcast record")
+                        try:
+                            self.publish_dead_letter("events.broadcasts.redis", {"raw_payload": raw_payload}, exc)
+                            processed = True
+                        except Exception:  # noqa: BLE001
+                            LOGGER.exception("failed to publish redis dead-letter event")
+                    if processed:
+                        continue
+
             batch = self.consumer.poll(timeout_ms=1000)
             if not batch:
                 time.sleep(self.config.idle_sleep_seconds)

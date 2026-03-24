@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import main as main_module
 from main import Tenant, create_app
 
 
@@ -171,6 +172,31 @@ def test_template_and_broadcast_require_non_empty_messages(tmp_path: Path):
     assert broadcast_response.json()["detail"] == "broadcast message is required"
 
 
+def test_staff_cannot_access_admin_only_stats_or_export(tmp_path: Path):
+    client = make_client(tmp_path)
+    admin_session = register_and_login(client, username="adminseed")
+    admin_headers = auth_headers(admin_session["access_token"], admin_session["user"]["tenant_id"])
+
+    create_member = client.post(
+        "/api/team",
+        json={"username": "staffuser", "password": "StrongPass123", "role": "staff"},
+        headers=admin_headers,
+    )
+    assert create_member.status_code == 200
+
+    staff_login = client.post("/api/login", json={"username": "staffuser", "password": "StrongPass123"})
+    assert staff_login.status_code == 200
+    staff_headers = auth_headers(staff_login.json()["access_token"], admin_session["user"]["tenant_id"])
+
+    stats_response = client.get("/api/stats", headers=staff_headers)
+    export_response = client.get("/api/export/tiktok.csv", headers=staff_headers)
+    leads_response = client.get("/api/leads", headers=staff_headers)
+
+    assert stats_response.status_code == 403
+    assert export_response.status_code == 403
+    assert leads_response.status_code == 200
+
+
 def test_import_does_not_touch_database_at_module_import(tmp_path: Path):
     env = os.environ.copy()
     env["DATABASE_URL"] = "postgresql://invalid:invalid@127.0.0.1:1/not-used"
@@ -186,6 +212,37 @@ def test_import_does_not_touch_database_at_module_import(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+def test_queue_broadcast_event_uses_redis_when_available(monkeypatch):
+    class FakeRedis:
+        def __init__(self):
+            self.items = []
+
+        def rpush(self, key, value):
+            self.items.append((key, value))
+            return len(self.items)
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(main_module, "REDIS_URL", "redis://fake:6379/0")
+    monkeypatch.setattr(main_module.Redis, "from_url", lambda *args, **kwargs: fake_redis)
+
+    called = {"kafka": False}
+
+    class FailingProducer:
+        def __init__(self, *args, **kwargs):
+            called["kafka"] = True
+            raise AssertionError("Kafka should not be used when Redis enqueue succeeds")
+
+    monkeypatch.setattr(main_module, "KafkaProducer", FailingProducer)
+
+    payload = {"campaign_id": 9, "tenant_id": "tenant-1", "message": "hello"}
+    ok = main_module.queue_broadcast_event(payload)
+
+    assert ok is True
+    assert called["kafka"] is False
+    assert len(fake_redis.items) == 1
+    assert fake_redis.items[0][0] == "queue:broadcasts"
 
 
 def test_webhook_rejects_invalid_line_signature_when_secret_is_configured(tmp_path: Path):

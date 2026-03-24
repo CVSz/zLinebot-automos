@@ -40,6 +40,17 @@ class FakeConsumer:
         return None
 
 
+class FakeRedis:
+    def __init__(self):
+        self.records = []
+
+    def brpop(self, *_args, **_kwargs):
+        return None
+
+    def close(self):
+        return None
+
+
 class FakeResponse:
     ok = True
     status_code = 200
@@ -80,11 +91,14 @@ def make_worker(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(worker_module, "KafkaProducer", FakeProducer)
     monkeypatch.setattr(worker_module, "KafkaConsumer", FakeConsumer)
+    monkeypatch.setattr(worker_module.Redis, "from_url", lambda *args, **kwargs: FakeRedis())
 
     config = worker_module.WorkerConfig(
         database_url=f"sqlite:///{db_path}",
         kafka_broker="unused:9092",
         kafka_group_id="test-worker",
+        redis_url="redis://unused:6379/0",
+        redis_queue_key="queue:broadcasts",
         line_push_timeout=1,
         idle_sleep_seconds=0,
     )

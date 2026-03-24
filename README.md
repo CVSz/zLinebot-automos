@@ -1,5 +1,19 @@
 # zLineBot-automos
 
+## 0) One-click deploy-config-installer-starter
+
+Run a single command to prepare config, install stack files, start Docker services, and run a health probe:
+
+```bash
+bash one-click-deploy-config-installer-starter.sh --domain example.local --mode project --app-dir ./zlinebot-automos-stack
+```
+
+Production host example:
+
+```bash
+sudo bash one-click-deploy-config-installer-starter.sh --mode system --domain example.com --cert-email ops@example.com --install-deps
+```
+
 A production-oriented CRM + LINE automation stack with:
 - **FastAPI API** (`backend/api`)
 - **Kafka worker** (`backend/worker`)

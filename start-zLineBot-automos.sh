@@ -8,7 +8,7 @@ source "${SCRIPT_DIR}/installer/lib/runtime.sh"
 
 INSTALL_DIR="/opt/${APP_NAME}"
 VERSION_FILE="${INSTALL_DIR}/.version.lock"
-REPO_URL="${REPO_URL:-https://github.com/CVSz/zLine.git}"
+REPO_URL="${REPO_URL:-https://github.com/CVSz/zLineBot-automos.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${APP_NAME}.service"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"

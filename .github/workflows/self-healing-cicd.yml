@@ -8,13 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   PYTHONUNBUFFERED: "1"
-
-permissions:
-  contents: write
-  pull-requests: write
-  security-events: write
 
 concurrency:
   group: self-healing-cicd-${{ github.ref }}
@@ -25,6 +19,9 @@ jobs:
     name: Validate, test, scan, and package
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
 
     outputs:
       ci_failed: ${{ steps.gate.outputs.ci_failed }}
@@ -35,6 +32,8 @@ jobs:
       # ---------------------------
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       # ---------------------------
       # Runtime setup
@@ -105,7 +104,11 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          pytest -q backend/worker/tests
+          if [ -d backend/worker/tests ] && [ -n "$(find backend/worker/tests -name 'test_*.py' -print -quit)" ]; then
+            pytest -q backend/worker/tests
+          else
+            echo "No worker tests found; skipping."
+          fi
 
       # ---------------------------
       # Python validation
@@ -131,7 +134,6 @@ jobs:
             exit 1
           fi
 
-          sudo systemctl start docker || true
           docker version
 
           if ! docker compose version >/dev/null 2>&1; then
@@ -160,13 +162,13 @@ jobs:
       - name: Security scan (filesystem)
         id: trivy
         continue-on-error: true
-        run: |
-          set -euo pipefail
-          mkdir -p .bin
-          curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz -o /tmp/trivy.tgz
-          tar -xzf /tmp/trivy.tgz -C .bin trivy
-          chmod +x .bin/trivy
-          ./.bin/trivy fs --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
 
       # ---------------------------
       # Docker build
@@ -192,7 +194,7 @@ jobs:
             name=$1
             result=$2
             echo "$name => $result"
-            [ "$result" = "failure" ] && failed=1
+            [ "$result" != "success" ] && failed=1
           }
 
           check npm_deps "${{ steps.npm_deps.outcome }}"
@@ -218,16 +220,20 @@ jobs:
   # ===================================
   self-healing:
     name: AI-assisted self-heal
-    if: failure() && needs.validate-and-build.outputs.ci_failed == '1'
+    if: failure() && needs.validate-and-build.outputs.ci_failed == '1' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [validate-and-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6

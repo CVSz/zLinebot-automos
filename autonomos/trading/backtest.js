@@ -1,7 +1,12 @@
 import { strategy } from "./strategy.js";
+import { BacktestEngine, calculateMetrics } from "../backtest/engine.js";
 
 const STARTING_BALANCE = 1000;
 const LOOKBACK_CANDLES = 60;
+
+function priceSeriesToCandles(prices = []) {
+  return prices.map((price, index) => ({ price: Number(price), time: index, rsi: 50, macd: 0 }));
+}
 
 export function backtest(prices, config = {}) {
   if (!Array.isArray(prices) || prices.length <= LOOKBACK_CANDLES) {
@@ -10,38 +15,31 @@ export function backtest(prices, config = {}) {
       end: STARTING_BALANCE,
       profit: 0,
       trades: [],
+      metrics: calculateMetrics([], []),
     };
   }
 
-  let balance = STARTING_BALANCE;
-  let position = 0;
-  const trades = [];
+  const candles = priceSeriesToCandles(prices);
+  const wrappedStrategy = (_, state) => {
+    const start = Math.max(0, state.index - LOOKBACK_CANDLES + 1);
+    const window = prices.slice(start, state.index + 1);
+    return strategy(window, config);
+  };
 
-  for (let i = LOOKBACK_CANDLES; i < prices.length; i++) {
-    const slice = prices.slice(i - LOOKBACK_CANDLES, i);
-    const price = prices[i];
-    const signal = strategy(slice, config);
+  const engine = new BacktestEngine(wrappedStrategy, candles, {
+    startingBalance: STARTING_BALANCE,
+    feeRate: Number(config.feeRate || 0),
+    slippageRate: Number(config.slippageRate || 0),
+  });
 
-    if (signal === "BUY" && balance > 0) {
-      position = balance / price;
-      trades.push({ type: "BUY", price, index: i });
-      balance = 0;
-    }
-
-    if (signal === "SELL" && position > 0) {
-      balance = position * price;
-      trades.push({ type: "SELL", price, index: i });
-      position = 0;
-    }
-  }
-
-  const finalValue = balance + position * prices[prices.length - 1];
+  const result = engine.run();
 
   return {
     start: STARTING_BALANCE,
-    end: finalValue,
-    profit: finalValue - STARTING_BALANCE,
-    trades,
+    end: result.endingBalance,
+    profit: result.profit,
+    trades: result.trades,
+    metrics: result.metrics,
   };
 }
 

@@ -1,0 +1,11 @@
+import type { FastifyInstance } from "fastify";
+
+type LoginBody = { userId: string };
+
+export async function registerAuthRoutes(app: FastifyInstance) {
+  app.post<{ Body: LoginBody }>("/login", async (request) => {
+    const { userId } = request.body;
+    const token = await app.jwt.sign({ sub: userId, role: "trader" });
+    return { token };
+  });
+}

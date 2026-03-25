@@ -1,6 +1,8 @@
 #include <atomic>
+#include <iostream>
 #include <thread>
 
+// Replace with vendor SDK (ITCH/OUCH/FAST/FIX-MD)
 struct Tick {
   double bid;
   double ask;
@@ -11,13 +13,15 @@ std::atomic<bool> run{true};
 
 void on_message(const Tick& t) {
   (void)t;
-  // TODO: push into lock-free ring buffer.
+  // push into lock-free ring buffer (see ring.hpp)
 }
 
 int main() {
+  // init NIC, set RSS queues, pin thread
   while (run.load(std::memory_order_relaxed)) {
-    // TODO: Poll vendor socket / bypass queue.
-    // TODO: Decode payload to Tick and call on_message(t).
+    // poll socket / kernel-bypass queue
+    // decode -> Tick t
+    // on_message(t);
     std::this_thread::yield();
   }
 

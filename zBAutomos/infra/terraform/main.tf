@@ -2,11 +2,10 @@ provider "aws" {
   region = "ap-southeast-1"
 }
 
-resource "aws_eks_cluster" "zba" {
-  name     = "zba-cluster"
-  role_arn = "arn:aws:iam::123:role/eks"
-
-  vpc_config {
-    subnet_ids = ["subnet-12345678", "subnet-87654321"]
-  }
+module "eks" {
+  source          = "terraform-aws-modules/eks/aws"
+  cluster_name    = "zba-cluster"
+  cluster_version = "1.29"
+  vpc_id          = "vpc-xxxx"
+  subnet_ids      = ["subnet-a", "subnet-b"]
 }

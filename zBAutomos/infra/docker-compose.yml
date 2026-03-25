@@ -1,21 +1,27 @@
-version: "3"
+version: "3.8"
 
 services:
   api:
     build: ../api
     ports:
       - "3000:3000"
+    depends_on:
+      - redis
+      - postgres
 
   worker:
     build: ../worker
-
-  redis:
-    image: redis:7-alpine
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_PASSWORD: password
+    depends_on:
+      - redis
+      - postgres
 
   ai:
     build: ../ai
+
+  redis:
+    image: redis:7
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: password

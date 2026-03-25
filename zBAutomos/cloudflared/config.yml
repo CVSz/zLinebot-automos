@@ -1,0 +1,7 @@
+tunnel: zba
+credentials-file: /root/.cloudflared/zba.json
+
+ingress:
+  - hostname: api.zeaz.dev
+    service: http://localhost:3000
+  - service: http_status:404

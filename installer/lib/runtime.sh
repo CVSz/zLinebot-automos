@@ -17,7 +17,16 @@ install_system_packages() {
   export DEBIAN_FRONTEND=noninteractive
   log "Installing runtime dependencies"
   apt-get update
-  apt-get install -y docker.io docker-compose-plugin git curl jq openssl ca-certificates ufw certbot zip
+
+  local base_packages=(git curl jq openssl ca-certificates ufw certbot zip)
+  apt-get install -y "${base_packages[@]}"
+
+  if apt-cache show docker-ce >/dev/null 2>&1; then
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  else
+    apt-get install -y docker.io docker-compose-plugin
+  fi
+
   systemctl enable docker
   systemctl start docker
 }

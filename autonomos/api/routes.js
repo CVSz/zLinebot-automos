@@ -123,7 +123,7 @@ router.post("/pipeline/run", auth, async (req, res, next) => {
 router.post("/kyc", (req, res) => {
 router.post("/trading/queue", auth, async (req, res, next) => {
   try {
-    const userId = Number(req.body?.userId || req.user.id);
+    const userId = Number(req.user.id);
     const job = await enqueueUserRun(userId, req.body?.market || {});
     return res.status(202).json({ queued: true, jobId: job.id, userId });
   } catch (error) {

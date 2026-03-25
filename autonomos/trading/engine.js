@@ -3,7 +3,7 @@ import { combinedStrategy } from "./multiStrategy.js";
 import { guard } from "./profitGuard.js";
 import { riskControl } from "./risk.js";
 import { RLAgent } from "./rl_agent.js";
-import { propagateTrade } from "./copyTrading.js";
+import { propagate } from "../copy/propagate.js";
 
 const client = createClient();
 const agent = new RLAgent();
@@ -31,7 +31,13 @@ export async function runTradingEngine({ prices, balance, symbol = "BTCUSDT", in
 
   if (!live) {
     agent.update(state, action, Number(indicators.lastProfit || 0), nextState);
-    const copied = propagateTrade(traderId, tradePayload);
+    const copied = await propagate(traderId, {
+      side: action,
+      size: amount,
+      symbol,
+      price,
+      pnl: Number(indicators.lastProfit || 0),
+    });
     return { mode: "simulation", ...tradePayload, copied };
   }
 
@@ -39,7 +45,13 @@ export async function runTradingEngine({ prices, balance, symbol = "BTCUSDT", in
   if (action === "BUY") execution = await safeBuy(client, symbol, amount);
   if (action === "SELL") execution = await safeSell(client, symbol, amount);
 
-  const copied = propagateTrade(traderId, tradePayload);
+  const copied = await propagate(traderId, {
+      side: action,
+      size: amount,
+      symbol,
+      price,
+      pnl: Number(indicators.lastProfit || 0),
+    });
   return { ...execution, copied };
 }
 

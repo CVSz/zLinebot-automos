@@ -2,6 +2,7 @@ import { executeTrade } from "../execution/live.js";
 import { checkRisk } from "../risk/manager.js";
 import { broadcast } from "../ws/server.js";
 import { query } from "../db.js";
+import { propagate } from "../copy/propagate.js";
 
 function strategyFromName(name = "basic") {
   if (name === "momentum") {
@@ -42,6 +43,25 @@ export async function runUser(userId, market = {}) {
   const execution = await executeTrade(signal, {
     symbol: market.symbol || "BTCUSDT",
     quantity: Number(market.quantity || 0.001),
+  const symbol = market.symbol || "BTCUSDT";
+  const quantity = Number(market.quantity || 0.001);
+  const execution = await executeTrade(signal, {
+    symbol,
+    quantity,
+  });
+
+  await query(
+    `INSERT INTO trades(user_id, symbol, side, quantity, price, pnl)
+     VALUES($1,$2,$3,$4,$5,$6)`,
+    [userId, symbol, signal, quantity, Number(execution?.price || market.price || 0), previewPnl],
+  );
+
+  const copied = await propagate(userId, {
+    side: signal,
+    size: quantity,
+    symbol,
+    price: Number(execution?.price || market.price || 0),
+    pnl: previewPnl,
   });
 
   broadcast({
@@ -49,9 +69,11 @@ export async function runUser(userId, market = {}) {
     userId,
     signal,
     execution,
+    copied,
     pnl: previewPnl,
     ts: Date.now(),
   });
 
   return { ok: true, signal, execution };
+  return { ok: true, signal, execution, copiedCount: copied.length };
 }

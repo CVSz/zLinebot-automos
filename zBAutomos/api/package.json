@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "main": "src/server.ts",
   "scripts": {
-    "start": "node src/server.ts"
+    "start": "tsx src/server.ts"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "@fastify/jwt": "^9.1.0",
+    "fastify": "^5.2.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
   }
 }

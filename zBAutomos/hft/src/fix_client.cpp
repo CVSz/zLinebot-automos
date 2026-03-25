@@ -19,6 +19,9 @@ class FixApp : public FIX::Application, public FIX::MessageCracker {
 };
 
 int main() {
-  // TODO: load QuickFIX settings, enable persistence, heartbeat, and resend handling.
+  // load QuickFIX settings
+  // add NewOrderSingle builder / CancelReplace support
+  // enforce heartbeat, sequence tracking, gap fill + resend handling
+  // use separate MD and ORD sessions
   return 0;
 }

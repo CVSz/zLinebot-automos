@@ -1,5 +1,7 @@
 import express from "express";
 import routes from "./routes.js";
+import { startWebSocketServer } from "../ws/server.js";
+import "../queue/tradingQueue.js";
 import { askAI } from "../ai/chatgpt.js";
 import { getRecentMessages, saveMessage } from "../memory/memory.js";
 
@@ -25,4 +27,9 @@ app.use((err, req, res, next) => {
 });
 
 const port = Number(process.env.PORT || 3300);
-app.listen(port, () => console.log(`[autonomos] api listening on ${port}`));
+const wsPort = Number(process.env.WS_PORT || 4000);
+
+app.listen(port, () => {
+  startWebSocketServer(wsPort);
+  console.log(`[autonomos] api listening on ${port} (ws:${wsPort})`);
+});

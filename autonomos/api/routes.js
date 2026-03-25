@@ -4,6 +4,11 @@ import { brain } from "../agents/brain.js";
 import { submitKYC, logAction } from "../kyc/service.js";
 import { tradingLoop } from "../core/trading_loop.js";
 import { optimize } from "../ai/tuner.js";
+import { auth } from "../middleware/auth.js";
+import { register } from "../auth/register.js";
+import { login } from "../auth/login.js";
+import { enqueueUserRun } from "../queue/tradingQueue.js";
+import { getRiskState } from "../risk/manager.js";
 
 const router = express.Router();
 
@@ -39,8 +44,12 @@ function generateMarketData(size = 300, start = 100) {
   return candles;
 }
 
-router.get("/portfolio", (req, res) => {
+router.post("/auth/register", register);
+router.post("/auth/login", login);
+
+router.get("/portfolio", auth, (req, res) => {
   return res.json({
+    userId: req.user.id,
     value: 12_500,
     pnl: 2_300,
     sharpe: 1.8,
@@ -48,7 +57,7 @@ router.get("/portfolio", (req, res) => {
   });
 });
 
-router.get("/backtest", (req, res) => {
+router.get("/backtest", auth, (req, res) => {
   const data = generateFakePrices();
   const report = backtest(data);
 
@@ -61,7 +70,7 @@ router.get("/backtest", (req, res) => {
   });
 });
 
-router.get("/optimize", async (req, res, next) => {
+router.get("/optimize", auth, async (req, res, next) => {
   try {
     const data = generateFakePrices();
     const best = await brain(data);
@@ -71,13 +80,13 @@ router.get("/optimize", async (req, res, next) => {
   }
 });
 
-router.get("/pipeline/tune", (req, res) => {
+router.get("/pipeline/tune", auth, (req, res) => {
   const candles = generateMarketData();
   const best = optimize(candles);
   return res.json(best);
 });
 
-router.post("/pipeline/run", async (req, res, next) => {
+router.post("/pipeline/run", auth, async (req, res, next) => {
   try {
     const candles = Array.isArray(req.body?.marketData) && req.body.marketData.length
       ? req.body.marketData
@@ -98,10 +107,22 @@ router.post("/pipeline/run", async (req, res, next) => {
   }
 });
 
-router.post("/kyc", (req, res) => {
+router.post("/trading/queue", auth, async (req, res, next) => {
+  try {
+    const userId = Number(req.body?.userId || req.user.id);
+    const job = await enqueueUserRun(userId, req.body?.market || {});
+    return res.status(202).json({ queued: true, jobId: job.id, userId });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/risk", auth, (req, res) => res.json(getRiskState()));
+
+router.post("/kyc", auth, (req, res) => {
   const { user, docs } = req.body || {};
-  const result = submitKYC(user || "unknown", docs || []);
-  const audit = logAction(user || "unknown", "kyc_submitted", {
+  const result = submitKYC(user || String(req.user.id), docs || []);
+  const audit = logAction(user || String(req.user.id), "kyc_submitted", {
     docsCount: Array.isArray(docs) ? docs.length : 0,
   });
 

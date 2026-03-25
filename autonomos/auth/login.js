@@ -7,7 +7,7 @@ export async function login(req, res, next) {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: "email_and_password_required" });
 
-    const found = await query("SELECT id, email, password, role, balance FROM users WHERE email=$1", [email]);
+    const found = await query("SELECT id, email, password, role FROM users WHERE email=$1", [email]);
     if (!found.rows.length) return res.status(401).json({ error: "invalid_credentials" });
 
     const user = found.rows[0];

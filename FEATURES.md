@@ -70,3 +70,14 @@
 - `start-zLineBot-automos.sh`: installs and manages the root Docker Compose stack as a systemd service.
 - `infrastructure/scripts/check-iac-policy.sh`: validates root `k8s/*.yaml` manifests.
 - `infrastructure/scripts/auto-fix-pipeline.sh`: applies safe formatting/permission remediation.
+
+## 5) AUTONOMOS quant + AI expansion
+
+- `autonomos/trading/rl_agent.js`: RL-lite Q-learning policy with indicator-driven state bucketing.
+- `autonomos/trading/copyTrading.js`: follower mapping, copy propagation, and bot ranking utilities.
+- `autonomos/trading/market_maker.js`: spread-based market making quotes with inventory bounds.
+- `autonomos/trading/arbitrage.js`: cross-venue edge detector with fee-aware threshold checks.
+- `autonomos/analytics/*.js`: Sharpe, drawdown, win-rate, VaR, PnL, and exposure metrics helpers.
+- `rl/`: PyTorch DQN scaffold (`model.py`, `agent.py`, `train.py`, `infer.py`) for deeper RL workflows.
+- `mobile/App.js`: React Native starter surface for mobile trading telemetry views.
+- `deploy.sh`: scripted enterprise deployment with build, apply, and autoscale steps.

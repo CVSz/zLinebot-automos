@@ -1,7 +1,8 @@
 import React from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
+import AnalyticsPanel from "./AnalyticsPanel";
 
-export default function TradingDashboard({ data = [], trades = [] }) {
+export default function TradingDashboard({ data = [], trades = [], stats = {} }) {
   return (
     <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl">
       <h2 className="text-2xl font-bold text-cyan-300">📊 zLineBot Pro</h2>
@@ -16,6 +17,10 @@ export default function TradingDashboard({ data = [], trades = [] }) {
             <Line dataKey="price" stroke="#22d3ee" dot={false} />
           </LineChart>
         </ResponsiveContainer>
+      </div>
+
+      <div className="mt-4">
+        <AnalyticsPanel stats={stats} />
       </div>
 
       <div className="mt-4 space-y-1 text-slate-300">

@@ -2,12 +2,24 @@ import { createClient, safeBuy, safeSell } from "./binance_safe.js";
 import { combinedStrategy } from "./multiStrategy.js";
 import { guard } from "./profitGuard.js";
 import { riskControl } from "./risk.js";
+import { RLAgent } from "./rl_agent.js";
+import { propagateTrade } from "./copyTrading.js";
 
 const client = createClient();
+const agent = new RLAgent();
 
-export async function runTradingEngine({ prices, balance, symbol = "BTCUSDT" }) {
-  const action = combinedStrategy(prices);
+function resolveAction(prices, indicators) {
+  const state = agent.getState(indicators);
+  const rlAction = agent.chooseAction(state);
+  const strategyAction = combinedStrategy(prices);
+
+  if (rlAction === "HOLD") return { action: strategyAction, state, nextState: state };
+  return { action: rlAction, state, nextState: state };
+}
+
+export async function runTradingEngine({ prices, balance, symbol = "BTCUSDT", indicators = {}, traderId = "bot-master" }) {
   const price = prices[prices.length - 1];
+  const { action, state, nextState } = resolveAction(prices, indicators);
   const { amount } = riskControl(balance, price);
   const live = String(process.env.LIVE_TRADING || "false") === "true";
 
@@ -15,13 +27,20 @@ export async function runTradingEngine({ prices, balance, symbol = "BTCUSDT" }) 
     return { mode: "paused", reason: "daily-loss-limit", action: "HOLD", symbol, price };
   }
 
+  const tradePayload = { action, amount, symbol, price, ts: Date.now() };
+
   if (!live) {
-    return { mode: "simulation", action, amount, symbol, price };
+    agent.update(state, action, Number(indicators.lastProfit || 0), nextState);
+    const copied = propagateTrade(traderId, tradePayload);
+    return { mode: "simulation", ...tradePayload, copied };
   }
 
-  if (action === "BUY") return safeBuy(client, symbol, amount);
-  if (action === "SELL") return safeSell(client, symbol, amount);
-  return { mode: "live", action: "HOLD", amount: 0, symbol, price };
+  let execution = { mode: "live", action: "HOLD", amount: 0, symbol, price };
+  if (action === "BUY") execution = await safeBuy(client, symbol, amount);
+  if (action === "SELL") execution = await safeSell(client, symbol, amount);
+
+  const copied = propagateTrade(traderId, tradePayload);
+  return { ...execution, copied };
 }
 
 export async function run() {

@@ -51,6 +51,26 @@ bash ubuntu_stack_installer.sh --domain example.local --skip-deps --app-dir ./zl
 
 > In project mode, dependency installation is skipped by design. Install Docker tooling separately.
 
+## 1.5) Enterprise `codex.sh` bootstrap
+
+Generate enterprise env secrets, spin up core services (PostgreSQL/Redis/Kafka/API/Worker), and export Kubernetes templates:
+
+```bash
+bash codex.sh
+```
+
+Optional flags:
+- `--skip-docker` (only generate env + Kubernetes manifests)
+- `--clone <repo-url>` (clone an external source snapshot before setup)
+
+Output artifacts:
+- `.env.enterprise`
+- `k8s/generated/api.yaml`
+- `k8s/generated/worker.yaml`
+- `k8s/generated/hpa.yaml`
+- `k8s/generated/postgres.yaml`
+- `k8s/generated/redis.yaml`
+
 ## 2) Full Config
 
 Installer-generated files:

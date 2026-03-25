@@ -11,6 +11,8 @@ from agent import Agent
 def step_environment(state, action):
     drift = random.uniform(-0.02, 0.02)
     pnl = drift if action == 0 else (drift * 1.2 if action == 1 else -drift * 1.2)
+    trade_count = 1 if action != 0 else 0
+    reward = pnl - (0.001 * trade_count)
     next_state = [s + random.uniform(-0.05, 0.05) for s in state]
     done = random.random() < 0.02
     return next_state, pnl, done
@@ -33,7 +35,7 @@ def main() -> None:
         losses = []
         trade_count = 0
 
-        for _ in range(steps):
+        for step in range(steps):
             action = agent.act(state)
             next_state, pnl, done = step_environment(state, action)
 
@@ -46,10 +48,17 @@ def main() -> None:
             if loss is not None:
                 losses.append(loss)
 
+            if step % 100 == 0:
+                agent.sync_target()
+
             state = next_state
             if done:
                 break
 
+        if agent.epsilon > 0.01:
+            agent.epsilon *= 0.995
+
+        print(json.dumps({"episode": episode + 1, "loss": np.mean(losses) if losses else None}))
         print(
             json.dumps(
                 {

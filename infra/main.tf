@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.6.0"
 
   required_providers {
     aws = {
@@ -28,6 +28,18 @@ variable "aws_region" {
   default = "ap-southeast-1"
 }
 
+variable "app_name" {
+  type    = string
+  default = "zlinebot"
+}
+
+resource "aws_instance" "app" {
+  ami           = "ami-123456"
+  instance_type = "t3.medium"
+
+  tags = {
+    Name = "${var.app_name}-app"
+  }
 variable "environment" {
   type    = string
   default = "prod"

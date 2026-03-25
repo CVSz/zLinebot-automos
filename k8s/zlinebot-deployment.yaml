@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zlinebot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: zlinebot
+  template:
+    metadata:
+      labels:
+        app: zlinebot
+    spec:
+      containers:
+        - name: api
+          image: your-image
+          ports:
+            - containerPort: 3000

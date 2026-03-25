@@ -1,4 +1,5 @@
 import express from "express";
+import routes from "./routes.js";
 import { askAI } from "../ai/chatgpt.js";
 import { getRecentMessages, saveMessage } from "../memory/memory.js";
 
@@ -16,6 +17,12 @@ app.post("/webhook", async (req, res) => {
   return res.json({ reply });
 });
 
+app.use("/api", routes);
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: "internal_error" });
+});
+
 const port = Number(process.env.PORT || 3300);
 app.listen(port, () => console.log(`[autonomos] api listening on ${port}`));
-

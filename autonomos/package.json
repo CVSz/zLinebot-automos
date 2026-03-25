@@ -1,0 +1,17 @@
+{
+  "name": "zlinebot-autonomos-runtime",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node api/server.js",
+    "autonomous": "node autonomous.js"
+  },
+  "dependencies": {
+    "binance-api-node": "^0.12.9",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "stripe": "^18.1.1",
+    "technicalindicators": "^3.1.0"
+  }
+}

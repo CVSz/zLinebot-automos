@@ -114,3 +114,14 @@ sudo bash start-zLineBot-automos.sh logs
 - [SECURITY.md](./SECURITY.md)
 - [LICENSE](./LICENSE)
 - [FEATURES.md](./FEATURES.md)
+
+## 5) AUTONOMOS enterprise add-on
+
+For the isolated enterprise scaffold (AI + Redis memory + trading modules), run:
+
+```bash
+bash scripts/zlinebot_autonomos.sh
+```
+
+Documentation: [docs/autonomos-enterprise-upgrade.md](./docs/autonomos-enterprise-upgrade.md)
+

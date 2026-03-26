@@ -25,3 +25,9 @@
 
 - ทำซ้ำ 5-10 scripts ต่อวัน
 - Hook 3 วิ → Demo 10 วิ → CTA 2 วิ
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Reviewed campaign script pack and marked content as a marketing asset outside runtime code paths.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

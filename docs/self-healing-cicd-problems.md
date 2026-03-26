@@ -62,3 +62,9 @@ with remediation status as of 2026-03-24.
 - Add deterministic remediation bundles keyed off failing step IDs.
 - Add checksum/SLSA verification for downloaded CLI tools.
 - Integrate shellcheck/yamllint for faster pre-gate failures.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Revalidated CI/CD remediation notes against the current `.github/workflows` and `infrastructure/scripts` layout.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

@@ -26,3 +26,9 @@
 - Expanded the Postgres bootstrap SQL from a minimal users/messages schema into a tenant-aware CRM schema.
 - Updated repository documentation to describe the current CRM automation architecture, endpoints, and release posture.
 - Preserved the flattened root-level project structure introduced earlier for all supporting source modules and infrastructure assets.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Added a documentation maintenance entry for the 2026-03-26 full-markdown refresh.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

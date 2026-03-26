@@ -35,3 +35,9 @@ rg --files -g '*.sh' | xargs -I{} bash -n '{}'
 - [ ] Documentation updated.
 - [ ] Security implications considered.
 - [ ] Backward compatibility reviewed.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Revalidated contribution flow steps against current helper scripts and stack startup commands.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

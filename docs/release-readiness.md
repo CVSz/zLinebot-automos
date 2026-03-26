@@ -58,3 +58,9 @@
 4. Lock production environment/configuration docs.
 5. Cut a release candidate and run the checklist.
 6. Ship GA after monitoring and rollback are verified.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Refreshed release-readiness framing to match the current repository breadth.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

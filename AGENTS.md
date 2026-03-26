@@ -112,3 +112,9 @@ When working in this repository, always specify the most relevant agent role:
 codex --agent backend-architect "Implement new webhook handler for broadcast campaigns"
 codex --agent ai-integration-engineer "Add Redis-based conversation memory to LINE responses"
 codex --agent devops-engineer "Update Kubernetes manifests for new HPA settings"
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Added a maintenance note that agent-role instructions were re-reviewed during the repo-wide doc scan.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

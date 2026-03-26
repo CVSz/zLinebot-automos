@@ -145,3 +145,8 @@ bash scripts/zlinebot_autonomos.sh
 
 Documentation: [docs/autonomos-enterprise-upgrade.md](./docs/autonomos-enterprise-upgrade.md)
 
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Marked the top-level operator guide as reviewed during the deep-scan documentation pass.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

@@ -108,3 +108,9 @@ If you want, the next pass can be an **automated canonicalization PR** that:
 - writes a machine-readable ownership manifest,
 - tags overlap directories in-place,
 - and updates launch scripts to a single canonical stack entrypoint.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Extended the deep-scan record with a fresh repository-wide documentation audit checkpoint.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

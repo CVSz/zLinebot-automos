@@ -38,3 +38,9 @@ docker compose -f docker/docker-compose.enterprise.yml up --build
 - Keep live order execution disabled in non-production environments.
 - Add JWT validation middleware and payment checks before enabling purchases.
 - Validate optimizer outputs using walk-forward tests to mitigate overfitting.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Marked enterprise scaffold guidance as reviewed against current folder inventory.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

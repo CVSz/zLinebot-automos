@@ -25,3 +25,9 @@ The service renders `infra/cloudflared/config.tmpl.yml` with your tunnel ID and 
 - `https://api.<domain>` -> `https://nginx:443`
 
 (`noTLSVerify: true` is enabled because nginx uses self-signed TLS by default.)
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Revalidated Cloudflared setup sequence and expected env variables for tunnel operation.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

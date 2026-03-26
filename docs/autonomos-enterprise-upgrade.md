@@ -39,3 +39,9 @@ node autonomos/api/server.js
 2. Add centralized logging + alerting around trading actions.
 3. Add API authentication and tenant isolation for `/webhook`.
 4. Add dashboard pages consuming runtime telemetry from this module.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Reviewed add-on boundaries and kept the non-destructive integration guidance current.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

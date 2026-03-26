@@ -15,3 +15,9 @@ openssl req -x509 -nodes -newkey rsa:2048 \
 ```
 
 For a real public wildcard such as `*.zeaz.dev`, terminate TLS at an external edge or use a DNS challenge-based certificate flow; the built-in installer does not mint public wildcard certificates automatically.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Rechecked certificate placement instructions and clarified this directory remains static asset input only.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

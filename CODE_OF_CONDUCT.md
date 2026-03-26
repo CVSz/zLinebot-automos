@@ -22,3 +22,9 @@ If you experience or witness unacceptable behavior, report it to the maintainers
 
 ## Attribution
 This Code of Conduct is adapted from the Contributor Covenant (v2.1).
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Rechecked policy wording and reporting section for consistency with governance docs.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

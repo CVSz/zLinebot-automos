@@ -218,6 +218,28 @@ launch_application() {
   (cd "$ROOT_DIR" && ./run.sh)
 }
 
+package_k8s_bundle() {
+  local bundle_name="$1"
+  local k8s_dir="${ROOT_DIR}/k8s"
+
+  if [[ ! -d "$k8s_dir" ]]; then
+    log "k8s directory not found at ${k8s_dir}; skipping bundle export"
+    return
+  fi
+
+  if ! command -v zip >/dev/null 2>&1; then
+    log "zip command not available; skipping k8s bundle export"
+    return
+  fi
+
+  log "Packaging Kubernetes + Terraform bundle to ${bundle_name}"
+  (
+    cd "$ROOT_DIR"
+    rm -f "$bundle_name"
+    zip -r "$bundle_name" k8s >/dev/null
+  )
+}
+
 usage() {
   cat <<'USAGE'
 Usage: bash codex.sh [options]
@@ -232,6 +254,8 @@ Options:
   --skip-codex          Skip Codex CLI install + auto setup
   --skip-launch         Skip launching run.sh at the end
   --skip-schema         Skip SQL schema apply step
+  --package-k8s         Export k8s/ as a zip bundle after setup
+  --k8s-bundle-name     Zip filename for --package-k8s (default: zlinebot-k8s-bundle.zip)
   -h, --help            Show help
 USAGE
 }
@@ -243,6 +267,8 @@ main() {
   local skip_codex="false"
   local skip_launch="false"
   local skip_schema="false"
+  local package_k8s="false"
+  local k8s_bundle_name="zlinebot-k8s-bundle.zip"
 
   DB_NAME="$DB_NAME_DEFAULT"
   DB_USER="$DB_USER_DEFAULT"
@@ -285,6 +311,14 @@ main() {
       --skip-schema)
         skip_schema="true"
         shift
+        ;;
+      --package-k8s)
+        package_k8s="true"
+        shift
+        ;;
+      --k8s-bundle-name)
+        k8s_bundle_name="${2:-}"
+        shift 2
         ;;
       -h|--help)
         usage
@@ -344,6 +378,10 @@ main() {
     launch_application
   else
     log "Skipping application launch"
+  fi
+
+  if [[ "$package_k8s" == "true" ]]; then
+    package_k8s_bundle "$k8s_bundle_name"
   fi
 
   log "DONE - zLineBot-Automos enterprise SaaS installer completed"

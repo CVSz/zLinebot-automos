@@ -1,5 +1,5 @@
 kafka-python==2.0.2
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.9
-requests==2.32.5
+requests==2.33.0
 redis==5.2.1

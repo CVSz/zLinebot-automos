@@ -107,6 +107,40 @@ GRANT ALL PRIVILEGES ON DATABASE zlinebot TO zbot_user;
 SQL
 }
 
+detect_node_entry() {
+  local project_dir="$1"
+  local entry=""
+
+  if [[ -f "${project_dir}/package.json" ]]; then
+    entry="$(
+      cd "$project_dir" &&
+      node -e "try{const p=require('./package.json');console.log(p.main||'')}catch(e){console.log('')}"
+    )"
+  fi
+
+  if [[ -z "$entry" ]]; then
+    for f in index.js app.js server.js main.js; do
+      if [[ -f "${project_dir}/${f}" ]]; then
+        entry="$f"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$entry" ]]; then
+    entry="$(
+      cd "$project_dir" &&
+      find . -type f -name "*.js" \
+        ! -path "./node_modules/*" \
+        ! -path "./dist/*" \
+        ! -path "./build/*" | head -n 1
+    )"
+  fi
+
+  entry="${entry#./}"
+  echo "$entry"
+}
+
 create_env_file() {
   local project_dir="$1"
   local env_file="${project_dir}/${ENV_FILE_NAME}"
@@ -133,14 +167,27 @@ ENVEOF
 
 create_run_script() {
   local project_dir="$1"
+  local node_entry="${2:-}"
 
-  cat > "${project_dir}/run.sh" <<'RUNEOF'
+  cat > "${project_dir}/run.sh" <<RUNEOF
 #!/usr/bin/env bash
 set -euo pipefail
 
 echo "🚀 Starting zLineBot-Automos..."
 if [[ -f package.json ]]; then
-  npm start || node index.js || node app.js
+  if npm run | grep -qE '^[[:space:]]*start'; then
+    npm start
+  elif [[ -n "${node_entry}" && -f "${node_entry}" ]]; then
+    node "${node_entry}"
+  else
+    ENTRY=\$(find . -type f -name "*.js" ! -path "./node_modules/*" | head -n 1 || true)
+    if [[ -n "\${ENTRY}" ]]; then
+      node "\${ENTRY}"
+    else
+      echo "❌ No JS entry point found"
+      exit 1
+    fi
+  fi
 elif [[ -f app.py ]]; then
   python app.py
 elif [[ -f main.go ]]; then
@@ -152,7 +199,7 @@ fi
 RUNEOF
 
   chmod +x "${project_dir}/run.sh"
-  log "Created run.sh"
+  log "Created run.sh (node entry: ${node_entry:-not detected})"
 }
 
 install_codex_cli() {
@@ -285,6 +332,12 @@ main() {
   project_type="$(detect_project_type "$project_dir")"
   log "Detected project type: ${project_type}"
 
+  local node_entry=""
+  if [[ "$project_type" == "node" ]]; then
+    node_entry="$(detect_node_entry "$project_dir")"
+    log "Detected Node.js entry: ${node_entry:-NOT FOUND}"
+  fi
+
   install_dependencies "$project_dir" "$project_type"
 
   if [[ "$skip_system" == "false" ]]; then
@@ -294,7 +347,7 @@ main() {
   fi
 
   create_env_file "$project_dir"
-  create_run_script "$project_dir"
+  create_run_script "$project_dir" "$node_entry"
 
   if [[ "$skip_codex" == "false" ]]; then
     install_codex_cli

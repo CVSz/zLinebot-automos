@@ -11,6 +11,10 @@ export function createClient() {
 }
 
 export function validateTrade(amountUSD) {
+  if (!Number.isFinite(amountUSD) || amountUSD <= 0) {
+    throw new Error("❌ Invalid trade amount");
+  }
+
   if (amountUSD > MAX_TRADE_USD) {
     throw new Error("❌ Trade too large");
   }

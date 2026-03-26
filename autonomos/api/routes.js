@@ -54,7 +54,6 @@ function generateMarketData(size = 300, start = 100) {
   return candles;
 }
 
-router.get("/portfolio", (req, res) => {
 router.post("/auth/register", register);
 router.post("/auth/login", login);
 
@@ -91,14 +90,12 @@ router.get("/optimize", auth, async (req, res, next) => {
   }
 });
 
-router.get("/pipeline/tune", (req, res) => {
 router.get("/pipeline/tune", auth, (req, res) => {
   const candles = generateMarketData();
   const best = optimize(candles);
   return res.json(best);
 });
 
-router.post("/pipeline/run", async (req, res, next) => {
 router.post("/pipeline/run", auth, async (req, res, next) => {
   try {
     const candles = Array.isArray(req.body?.marketData) && req.body.marketData.length
@@ -120,7 +117,6 @@ router.post("/pipeline/run", auth, async (req, res, next) => {
   }
 });
 
-router.post("/kyc", (req, res) => {
 router.post("/trading/queue", auth, async (req, res, next) => {
   try {
     const userId = Number(req.user.id);
@@ -155,7 +151,7 @@ router.post("/market/cache/:symbol", auth, async (req, res, next) => {
 });
 
 router.post("/kyc", auth, (req, res) => {
-  const { user, docs } = req.body || {};
+  const { docs } = req.body || {};
   const result = submitKYC(String(req.user.id), docs || []);
   const audit = logAction(String(req.user.id), "kyc_submitted", {
     docsCount: Array.isArray(docs) ? docs.length : 0,
@@ -163,7 +159,6 @@ router.post("/kyc", auth, (req, res) => {
 
   return res.json({ ...result, audit });
 });
-
 
 router.post("/copy/follow", auth, async (req, res, next) => {
   try {
@@ -206,7 +201,7 @@ router.post("/billing/checkout", auth, async (req, res, next) => {
   }
 });
 
-router.post("/billing/webhook", express.raw({ type: "application/json" }), webhook);
+router.post("/billing/webhook", webhook);
 
 router.get("/admin/users", auth, requireAdmin, async (req, res, next) => {
   try {

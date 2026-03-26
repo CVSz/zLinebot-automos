@@ -1,11 +1,18 @@
 import Stripe from "stripe";
 import { query } from "../db.js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET || "", {
+const stripeSecret = process.env.STRIPE_SECRET || "";
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+
+const stripe = new Stripe(stripeSecret, {
   apiVersion: "2025-02-24.acacia",
 });
 
 export async function createCheckout(userId) {
+  if (!stripeSecret) {
+    throw new Error("stripe_not_configured");
+  }
+
   return stripe.checkout.sessions.create({
     payment_method_types: ["card"],
     client_reference_id: String(userId),
@@ -24,9 +31,18 @@ export async function createCheckout(userId) {
 
 export async function webhook(req, res, next) {
   try {
-    const event = req.body;
+    if (!webhookSecret) {
+      return res.status(503).json({ error: "webhook_secret_not_configured" });
+    }
 
-    if (event?.type === "checkout.session.completed") {
+    const signature = req.headers["stripe-signature"];
+    if (!signature) {
+      return res.status(400).json({ error: "missing_stripe_signature" });
+    }
+
+    const event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
+
+    if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const userId = Number(session.client_reference_id || session.metadata?.userId);
 
@@ -47,6 +63,10 @@ export async function webhook(req, res, next) {
 
     return res.sendStatus(200);
   } catch (error) {
+    if (error?.type === "StripeSignatureVerificationError") {
+      return res.status(400).json({ error: "invalid_stripe_signature" });
+    }
+
     return next(error);
   }
 }

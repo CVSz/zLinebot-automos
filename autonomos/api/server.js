@@ -6,6 +6,9 @@ import { askAI } from "../ai/chatgpt.js";
 import { getRecentMessages, saveMessage } from "../memory/memory.js";
 
 const app = express();
+
+// Stripe requires the raw request body for signature verification.
+app.use("/api/billing/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
 app.post("/webhook", async (req, res) => {

@@ -1,0 +1,103 @@
+name: zLinebot CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: [5432:5432]
+
+      redis:
+        image: redis:7
+        ports: [6379:6379]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install -r backend/api/requirements.txt
+          pip install -r backend/worker/requirements.txt
+          pip install pytest pytest-cov ruff mypy
+
+      - name: Lint
+        run: ruff check backend
+
+      - name: Type check
+        run: mypy backend
+
+      - name: Test
+        run: pytest backend/api backend/worker --cov=backend --cov-fail-under=80
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: |
+          cd frontend
+          npm ci
+
+      - run: |
+          cd frontend
+          npm run build
+
+  enforcement:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run codemods
+        run: |
+          python scripts/codemods/fix_backend.py
+          node scripts/codemods/fix_frontend.js
+
+      - name: Fail if changes required
+        run: |
+          git diff --exit-code || (echo "❌ Codemods not applied" && exit 1)
+
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secret scan
+        run: |
+          pip install detect-secrets
+          detect-secrets scan
+
+      - name: Python deps scan
+        run: |
+          pip install safety
+          safety check || true
+
+      - name: Node deps scan
+        run: |
+          cd frontend
+          npm audit --audit-level=high || true

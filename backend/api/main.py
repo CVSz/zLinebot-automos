@@ -998,7 +998,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             "revenue": revenue or 0,
             "total_leads": total,
             "hot_leads": hot,
-            "conversion_rate": round(((rows_dict := dict(rows)).get("closed", 0) / total) * 100, 2) if total else 0,
+            "conversion_rate": round((dict(rows).get("closed", 0) / total) * 100, 2) if total else 0,
         }
 
     @app.get("/api/revenue/daily")

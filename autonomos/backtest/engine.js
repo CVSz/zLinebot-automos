@@ -12,6 +12,8 @@ export class BacktestEngine {
     this.startingBalance = safeNumber(options.startingBalance, DEFAULT_STARTING_BALANCE);
     this.feeRate = safeNumber(options.feeRate, 0.001);
     this.slippageRate = safeNumber(options.slippageRate, 0.0005);
+    this.stopLossPercent = safeNumber(options.stopLossPercent, 0);
+    this.takeProfitPercent = safeNumber(options.takeProfitPercent, 0);
 
     this.balance = this.startingBalance;
     this.position = 0;
@@ -43,6 +45,14 @@ export class BacktestEngine {
         this.closePosition(price, candle, i, "signal");
       }
 
+      if (this.position > 0) {
+        if (this.shouldStopLoss(price)) {
+          this.closePosition(price, candle, i, "stop_loss");
+        } else if (this.shouldTakeProfit(price)) {
+          this.closePosition(price, candle, i, "take_profit");
+        }
+      }
+
       const equity = this.currentEquity(price);
       this.equityCurve.push({ index: i, time: candle?.time || i, equity });
 
@@ -57,6 +67,14 @@ export class BacktestEngine {
     }
 
     return this.results();
+  }
+
+  shouldStopLoss(price) {
+    return this.entry > 0 && this.stopLossPercent > 0 && price <= this.entry * (1 - this.stopLossPercent);
+  }
+
+  shouldTakeProfit(price) {
+    return this.entry > 0 && this.takeProfitPercent > 0 && price >= this.entry * (1 + this.takeProfitPercent);
   }
 
   openPosition(price, candle, index) {
@@ -125,7 +143,7 @@ export class BacktestEngine {
       trades: this.trades,
       equityCurve: this.equityCurve,
       returns: this.returns,
-      metrics: calculateMetrics(this.returns, this.equityCurve),
+      metrics: calculateMetrics(this.returns, this.equityCurve, this.trades),
     };
   }
 }
@@ -154,13 +172,33 @@ export function maxDrawdown(equityCurve = []) {
   return maxDd;
 }
 
-export function calculateMetrics(returns = [], equityCurve = []) {
+export function calculateMetrics(returns = [], equityCurve = [], trades = []) {
   const positive = returns.filter((value) => value > 0).length;
+  const tradeStats = calculateTradeStats(trades);
   return {
     sharpe: sharpe(returns),
     maxDrawdown: maxDrawdown(equityCurve),
     periods: returns.length,
     positivePeriods: positive,
     winRateByPeriod: returns.length ? positive / returns.length : 0,
+    ...tradeStats,
+  };
+}
+
+export function calculateTradeStats(trades = []) {
+  const sellTrades = trades.filter((trade) => trade?.type === "SELL");
+  const winningTrades = sellTrades.filter((trade) => safeNumber(trade.pnl) > 0);
+  const grossProfit = winningTrades.reduce((sum, trade) => sum + safeNumber(trade.pnl), 0);
+  const grossLoss = Math.abs(
+    sellTrades
+      .filter((trade) => safeNumber(trade.pnl) < 0)
+      .reduce((sum, trade) => sum + safeNumber(trade.pnl), 0),
+  );
+
+  return {
+    totalTrades: sellTrades.length,
+    winningTrades: winningTrades.length,
+    tradeWinRate: sellTrades.length ? winningTrades.length / sellTrades.length : 0,
+    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0,
   };
 }

@@ -170,58 +170,18 @@ model = "gpt-5-codex"
 model_reasoning_effort = "high"
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
-context_compression = true
-cache_enabled = true
-parallel_tasks = true
-max_threads = 8
-auto_fix_errors = true
-auto_install_dependencies = true
-verbosity = "medium"
 
-[model_provider]
-name = "openai"
-base_url = "https://api.openai.com/v1"
-env_key = "OPENAI_API_KEY"
+[profiles.fast]
+model = "o4-mini"
+model_reasoning_effort = "low"
 
-[environment]
-shell = "/bin/bash"
-network_access = true
-workspace_dir = "${project_root}"
-process_timeout = 600
-
-[repo]
-root = "${project_root}"
-default_branch = "main"
-auto_commit = true
-auto_push = false
-commit_message = "🤖 Codex automated update"
-branch_prefix = "bot/"
-ignore_paths = [".git", "node_modules", "logs", "temp", "*.log", "memory.json"]
-
-[tools.git]
-enabled = true
-auto_fetch = true
-
-[tools.shell]
-enabled = true
-
-[tools.filesystem]
-enabled = true
-
-[features]
-multi_agent = true
-auto_planning = true
-self_healing = true
-task_queue = true
-chat_memory = true
-affiliate_system = true
-push_notifications = true
-compliance = true
-analytics = true
-saas_scaling = true
+[profiles.safe]
+approval_policy = "on-request"
+sandbox_mode = "read-only"
 CONFEOF
 
   log "Wrote Codex config to ${CODEX_CONFIG_FILE}"
+  log "Config scoped for ${project_root}"
 }
 
 verify_openai_api_key() {
@@ -238,10 +198,15 @@ run_codex_auto_setup() {
     return
   fi
 
+  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    log "Skipping Codex auto setup: OPENAI_API_KEY is not set."
+    return
+  fi
+
   log "Running Codex auto setup"
   (
     cd "$project_dir"
-    codex -- --auto-edit "analyze this LINE bot project, install dependencies, setup PostgreSQL + Redis, configure JWT auth, setup Stripe + marketplace, setup WebSocket dashboard, setup Kubernetes deployment templates, setup affiliate referral + push notifications + compliance + analytics + multi-user SaaS, optimize for production enterprise"
+    codex "analyze this LINE bot project, verify dependencies, run relevant tests, identify the top 3 production risks, and propose minimal safe fixes."
   )
 }
 

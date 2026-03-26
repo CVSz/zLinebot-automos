@@ -24,3 +24,9 @@ Send reports to: **security@zlinebot.example** (replace with your actual securit
 - Keep Docker base images and host OS patched.
 - Restrict exposed network surfaces to required ports only.
 - Enable HTTPS with trusted certificates.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Revalidated the security reporting process and response expectations section.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

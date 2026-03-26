@@ -81,3 +81,9 @@
 - `rl/`: PyTorch DQN scaffold (`model.py`, `agent.py`, `train.py`, `infer.py`) for deeper RL workflows.
 - `mobile/App.js`: React Native starter surface for mobile trading telemetry views.
 - `deploy.sh`: scripted enterprise deployment with build, apply, and autoscale steps.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Revalidated the feature inventory against current platform surfaces and deployment paths.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

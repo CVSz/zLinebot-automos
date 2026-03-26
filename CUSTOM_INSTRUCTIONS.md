@@ -115,3 +115,9 @@ codex --profile deep-reasoning --agent devops-engineer "Update k8s manifests and
 
 # Security review
 codex --agent security-auditor "Full security audit of recent changes"
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Reviewed repository custom-instruction metadata and role framing as of the current audit date.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

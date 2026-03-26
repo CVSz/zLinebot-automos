@@ -23,3 +23,9 @@ This document maps a practical migration path using the existing repository layo
 2. Containerize API/worker processes and deploy behind a load balancer.
 3. Store audit logs and reports in object storage.
 4. Add managed observability and alerting.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Reconfirmed migration sequencing against active runtime directories (`backend`, `frontend`, `k8s`, `infrastructure`).
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

@@ -43,3 +43,9 @@ This folder is a production-oriented starting point for deploying zLineBot-Autom
 - Use External Secrets or AWS Secrets Manager + CSI driver for production secrets.
 - Replace `zeaz/zlinebot-*` images with your ECR repositories from Terraform outputs.
 - Validate your Cloudflare tunnel and set `CLOUDFLARE_TUNNEL_TOKEN` in `bot-secrets`.
+
+## Documentation Refresh — 2026-03-26 (UTC)
+
+- Revalidated Kubernetes/Terraform onboarding narrative with current manifest layout.
+- Audit scope: repository-wide markdown and operational-documentation verification pass.
+

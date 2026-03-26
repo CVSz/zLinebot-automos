@@ -7,9 +7,12 @@ set -euo pipefail
 
 REPO_URL_DEFAULT="https://github.com/CVSz/zLinebot-automos.git"
 TARGET_DIR_DEFAULT="zLinebot-automos"
-ENV_FILE_NAME=".env"
 CODEX_CONFIG_DIR="${HOME}/.codex"
 CODEX_CONFIG_FILE="${CODEX_CONFIG_DIR}/config.toml"
+
+DB_NAME_DEFAULT="zlinebot"
+DB_USER_DEFAULT="zbot_user"
+DB_PASS_DEFAULT=""
 
 log() {
   printf '[codex] %s\n' "$*"
@@ -20,6 +23,11 @@ require_cmd() {
     log "Missing required command: $1"
     exit 1
   fi
+}
+
+random_secret() {
+  require_cmd openssl
+  openssl rand -hex 32
 }
 
 ensure_repo() {
@@ -41,42 +49,27 @@ ensure_repo() {
   git clone "${repo_url}" "${target_dir}"
 }
 
-detect_project_type() {
+resolve_paths() {
   local project_dir="$1"
 
-  if [[ -f "${project_dir}/package.json" ]]; then
-    echo "node"
-  elif [[ -f "${project_dir}/requirements.txt" ]]; then
-    echo "python"
-  elif [[ -f "${project_dir}/go.mod" ]]; then
-    echo "go"
-  else
-    echo "unknown"
+  ROOT_DIR="$project_dir"
+  AUTONOMOS_DIR="$project_dir/autonomos"
+
+  if [[ ! -d "$AUTONOMOS_DIR" ]]; then
+    log "Could not find autonomos runtime directory at ${AUTONOMOS_DIR}"
+    exit 1
   fi
+
+  SCHEMA_FILE="$AUTONOMOS_DIR/db/schema.sql"
+  AUTONOMOS_ENV_FILE="$AUTONOMOS_DIR/.env"
 }
 
 install_dependencies() {
-  local project_dir="$1"
-  local project_type="$2"
+  log "Installing workspace dependencies"
+  require_cmd npm
 
-  log "Installing dependencies for ${project_type}"
-  case "$project_type" in
-    node)
-      require_cmd npm
-      (cd "$project_dir" && npm install)
-      ;;
-    python)
-      require_cmd pip
-      (cd "$project_dir" && pip install -r requirements.txt)
-      ;;
-    go)
-      require_cmd go
-      (cd "$project_dir" && go mod tidy)
-      ;;
-    *)
-      log "Unknown project type; skipping dependency install"
-      ;;
-  esac
+  (cd "$ROOT_DIR" && npm install)
+  (cd "$AUTONOMOS_DIR" && npm install)
 }
 
 setup_postgres_redis() {
@@ -88,118 +81,85 @@ setup_postgres_redis() {
   sudo systemctl enable postgresql redis-server
   sudo systemctl start postgresql redis-server
 
-  sudo -u postgres psql <<'SQL'
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'zlinebot') THEN
-    CREATE DATABASE zlinebot;
-  END IF;
-END $$;
+  local db_password="$1"
 
-DO $$
+  sudo -u postgres psql <<SQL
+DO \$\$
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'zbot_user') THEN
-    CREATE ROLE zbot_user LOGIN PASSWORD 'zbot_pass';
+  IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '${DB_NAME}') THEN
+    CREATE DATABASE ${DB_NAME};
   END IF;
-END $$;
+END \$\$;
 
-GRANT ALL PRIVILEGES ON DATABASE zlinebot TO zbot_user;
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
+    CREATE ROLE ${DB_USER} LOGIN PASSWORD '${db_password}';
+  ELSE
+    ALTER ROLE ${DB_USER} WITH PASSWORD '${db_password}';
+  END IF;
+END \$\$;
+
+GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
 SQL
 }
 
-detect_node_entry() {
-  local project_dir="$1"
-  local entry=""
+apply_schema() {
+  local db_password="$1"
 
-  if [[ -f "${project_dir}/package.json" ]]; then
-    entry="$(
-      cd "$project_dir" &&
-      node -e "try{const p=require('./package.json');console.log(p.main||'')}catch(e){console.log('')}"
-    )"
-  fi
-
-  if [[ -z "$entry" ]]; then
-    for f in index.js app.js server.js main.js; do
-      if [[ -f "${project_dir}/${f}" ]]; then
-        entry="$f"
-        break
-      fi
-    done
-  fi
-
-  if [[ -z "$entry" ]]; then
-    entry="$(
-      cd "$project_dir" &&
-      find . -type f -name "*.js" \
-        ! -path "./node_modules/*" \
-        ! -path "./dist/*" \
-        ! -path "./build/*" | head -n 1
-    )"
-  fi
-
-  entry="${entry#./}"
-  echo "$entry"
-}
-
-create_env_file() {
-  local project_dir="$1"
-  local env_file="${project_dir}/${ENV_FILE_NAME}"
-
-  if [[ -f "$env_file" ]]; then
-    log "${ENV_FILE_NAME} already exists, skipping"
+  if [[ ! -f "$SCHEMA_FILE" ]]; then
+    log "Schema file not found at ${SCHEMA_FILE}; skipping schema migration"
     return
   fi
 
-  cat > "$env_file" <<'ENVEOF'
-PORT=3000
+  log "Applying SQL schema from ${SCHEMA_FILE}"
+  PGPASSWORD="$db_password" psql \
+    --host=localhost \
+    --username="$DB_USER" \
+    --dbname="$DB_NAME" \
+    --file="$SCHEMA_FILE"
+}
+
+create_env_file() {
+  local db_password="$1"
+
+  if [[ -f "$AUTONOMOS_ENV_FILE" ]]; then
+    log "autonomos/.env already exists, skipping"
+    return
+  fi
+
+  local jwt_secret
+  jwt_secret="$(random_secret)"
+
+  cat > "$AUTONOMOS_ENV_FILE" <<ENVEOF
 NODE_ENV=production
-JWT_SECRET=YOUR_SECRET_KEY
-LINE_CHANNEL_ACCESS_TOKEN=PUT_YOUR_TOKEN_HERE
-LINE_CHANNEL_SECRET=PUT_YOUR_SECRET_HERE
-POSTGRES_URL=postgres://zbot_user:zbot_pass@localhost:5432/zlinebot
+PORT=3300
+WS_PORT=4000
+JWT_SECRET=${jwt_secret}
+DATABASE_URL=postgres://${DB_USER}:${db_password}@localhost:5432/${DB_NAME}
 REDIS_URL=redis://localhost:6379
-STRIPE_KEY=PUT_YOUR_STRIPE_KEY_HERE
-CLOUDFLARE_TUNNEL=PUT_YOUR_TUNNEL_TOKEN
+OPENAI_API_KEY=
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PRICE_ID=
+APP_BASE_URL=http://localhost:3300
 ENVEOF
 
-  log "Created ${env_file}; update with production credentials"
+  log "Created ${AUTONOMOS_ENV_FILE} with generated JWT secret"
 }
 
 create_run_script() {
-  local project_dir="$1"
-  local node_entry="${2:-}"
-
-  cat > "${project_dir}/run.sh" <<RUNEOF
+  cat > "${ROOT_DIR}/run.sh" <<'RUNEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "🚀 Starting zLineBot-Automos..."
-if [[ -f package.json ]]; then
-  if npm run | grep -qE '^[[:space:]]*start'; then
-    npm start
-  elif [[ -n "${node_entry}" && -f "${node_entry}" ]]; then
-    node "${node_entry}"
-  else
-    ENTRY=\$(find . -type f -name "*.js" ! -path "./node_modules/*" | head -n 1 || true)
-    if [[ -n "\${ENTRY}" ]]; then
-      node "\${ENTRY}"
-    else
-      echo "❌ No JS entry point found"
-      exit 1
-    fi
-  fi
-elif [[ -f app.py ]]; then
-  python app.py
-elif [[ -f main.go ]]; then
-  go run main.go
-else
-  echo "❌ No entry point found"
-  exit 1
-fi
+echo "🚀 Starting zLineBot-Automos runtime..."
+cd autonomos
+npm start
 RUNEOF
 
-  chmod +x "${project_dir}/run.sh"
-  log "Created run.sh (node entry: ${node_entry:-not detected})"
+  chmod +x "${ROOT_DIR}/run.sh"
+  log "Created run.sh"
 }
 
 install_codex_cli() {
@@ -209,7 +169,6 @@ install_codex_cli() {
 }
 
 write_codex_config() {
-  local project_root="$1"
   mkdir -p "$CODEX_CONFIG_DIR"
 
   cat > "$CODEX_CONFIG_FILE" <<CONFEOF
@@ -228,7 +187,6 @@ sandbox_mode = "read-only"
 CONFEOF
 
   log "Wrote Codex config to ${CODEX_CONFIG_FILE}"
-  log "Config scoped for ${project_root}"
 }
 
 verify_openai_api_key() {
@@ -238,8 +196,6 @@ verify_openai_api_key() {
 }
 
 run_codex_auto_setup() {
-  local project_dir="$1"
-
   if ! command -v codex >/dev/null 2>&1; then
     log "codex command not found; skipping auto setup"
     return
@@ -252,15 +208,14 @@ run_codex_auto_setup() {
 
   log "Running Codex auto setup"
   (
-    cd "$project_dir"
+    cd "$ROOT_DIR"
     codex "analyze this LINE bot project, verify dependencies, run relevant tests, identify the top 3 production risks, and propose minimal safe fixes."
   )
 }
 
 launch_application() {
-  local project_dir="$1"
   log "Launching zLineBot-Automos"
-  (cd "$project_dir" && ./run.sh)
+  (cd "$ROOT_DIR" && ./run.sh)
 }
 
 usage() {
@@ -270,9 +225,13 @@ Usage: bash codex.sh [options]
 Options:
   --repo-url <url>      Git repository URL (default: official zLinebot-automos repo)
   --target-dir <dir>    Target directory for clone/use (default: zLinebot-automos)
+  --db-name <name>      PostgreSQL database name (default: zlinebot)
+  --db-user <user>      PostgreSQL app user (default: zbot_user)
+  --db-pass <pass>      PostgreSQL app password (default: generated random)
   --skip-system         Skip apt/systemctl PostgreSQL + Redis setup
   --skip-codex          Skip Codex CLI install + auto setup
   --skip-launch         Skip launching run.sh at the end
+  --skip-schema         Skip SQL schema apply step
   -h, --help            Show help
 USAGE
 }
@@ -283,6 +242,11 @@ main() {
   local skip_system="false"
   local skip_codex="false"
   local skip_launch="false"
+  local skip_schema="false"
+
+  DB_NAME="$DB_NAME_DEFAULT"
+  DB_USER="$DB_USER_DEFAULT"
+  DB_PASS="$DB_PASS_DEFAULT"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -292,6 +256,18 @@ main() {
         ;;
       --target-dir)
         target_dir="${2:-}"
+        shift 2
+        ;;
+      --db-name)
+        DB_NAME="${2:-}"
+        shift 2
+        ;;
+      --db-user)
+        DB_USER="${2:-}"
+        shift 2
+        ;;
+      --db-pass)
+        DB_PASS="${2:-}"
         shift 2
         ;;
       --skip-system)
@@ -306,6 +282,10 @@ main() {
         skip_launch="true"
         shift
         ;;
+      --skip-schema)
+        skip_schema="true"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -318,6 +298,11 @@ main() {
     esac
   done
 
+  if [[ -z "$DB_PASS" ]]; then
+    DB_PASS="$(random_secret)"
+    log "Generated random database password"
+  fi
+
   log "Starting zLineBot-Automos enterprise installer"
   ensure_repo "$target_dir" "$repo_url"
 
@@ -328,38 +313,35 @@ main() {
     project_dir="$(pwd)"
   fi
 
-  local project_type
-  project_type="$(detect_project_type "$project_dir")"
-  log "Detected project type: ${project_type}"
-
-  local node_entry=""
-  if [[ "$project_type" == "node" ]]; then
-    node_entry="$(detect_node_entry "$project_dir")"
-    log "Detected Node.js entry: ${node_entry:-NOT FOUND}"
-  fi
-
-  install_dependencies "$project_dir" "$project_type"
+  resolve_paths "$project_dir"
+  install_dependencies
 
   if [[ "$skip_system" == "false" ]]; then
-    setup_postgres_redis
+    setup_postgres_redis "$DB_PASS"
   else
     log "Skipping PostgreSQL + Redis setup"
   fi
 
-  create_env_file "$project_dir"
-  create_run_script "$project_dir" "$node_entry"
+  if [[ "$skip_schema" == "false" ]]; then
+    apply_schema "$DB_PASS"
+  else
+    log "Skipping SQL schema apply"
+  fi
+
+  create_env_file "$DB_PASS"
+  create_run_script
 
   if [[ "$skip_codex" == "false" ]]; then
     install_codex_cli
-    write_codex_config "$project_dir"
+    write_codex_config
     verify_openai_api_key
-    run_codex_auto_setup "$project_dir"
+    run_codex_auto_setup
   else
     log "Skipping Codex install/config/auto setup"
   fi
 
   if [[ "$skip_launch" == "false" ]]; then
-    launch_application "$project_dir"
+    launch_application
   else
     log "Skipping application launch"
   fi

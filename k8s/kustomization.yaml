@@ -18,3 +18,8 @@ resources:
   - ingress/cloudflare-ingress.yaml
   - ingress/cloudflare-tunnel-deployment.yaml
   - autoscaling/hpa.yaml
+patches:
+  - path: vault/sidecar.yaml
+    target:
+      kind: Deployment
+      name: zlinebot-api

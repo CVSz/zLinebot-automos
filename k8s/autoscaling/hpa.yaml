@@ -9,7 +9,7 @@ spec:
     kind: Deployment
     name: zlinebot-api
   minReplicas: 3
-  maxReplicas: 15
+  maxReplicas: 20
   metrics:
     - type: Resource
       resource:
@@ -28,7 +28,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: zlinebot-worker
-  minReplicas: 4
+  minReplicas: 2
   maxReplicas: 20
   metrics:
     - type: Resource

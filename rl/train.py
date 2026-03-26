@@ -33,16 +33,16 @@ def main() -> None:
     for episode in range(episodes):
         state = np.random.normal(0, 1, state_dim).tolist()
         losses = []
-        trade_count = 0
+        total_trade_count = 0
 
         for step in range(steps):
             action = agent.act(state)
             next_state, pnl, done = step_environment(state, action)
 
-            if action in (1, 2):
-                trade_count += 1
+            step_trade_count = 1 if action in (1, 2) else 0
+            total_trade_count += step_trade_count
 
-            reward = shape_reward(pnl, trade_count)
+            reward = shape_reward(pnl, step_trade_count)
             agent.remember((state, action, reward, next_state if not done else None))
             loss = agent.train()
             if loss is not None:
@@ -55,17 +55,13 @@ def main() -> None:
             if done:
                 break
 
-        if agent.epsilon > 0.01:
-            agent.epsilon *= 0.995
-
-        print(json.dumps({"episode": episode + 1, "loss": np.mean(losses) if losses else None}))
         print(
             json.dumps(
                 {
                     "episode": episode + 1,
                     "loss": np.mean(losses) if losses else None,
                     "epsilon": agent.epsilon,
-                    "trade_count": trade_count,
+                    "trade_count": total_trade_count,
                 }
             )
         )

@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zlinebot-api
+spec:
+  template:
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "codex-runner"
+        vault.hashicorp.com/agent-inject-secret-openai: "secret/data/codex"

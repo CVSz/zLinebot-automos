@@ -59,13 +59,25 @@ module "eks" {
         workload = "general"
       }
     }
+
+    worker = {
+      desired_size   = 2
+      min_size       = 2
+      max_size       = 20
+      instance_types = ["c6i.large"]
+      capacity_type  = "ON_DEMAND"
+
+      labels = {
+        workload = "worker"
+      }
+    }
   }
 
   cluster_addons = {
-    coredns = {}
-    kube-proxy = {}
-    vpc-cni = {}
-    aws-ebs-csi-driver = {}
+    coredns             = {}
+    kube-proxy          = {}
+    vpc-cni             = {}
+    aws-ebs-csi-driver  = {}
   }
 }
 

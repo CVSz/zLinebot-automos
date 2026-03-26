@@ -7,6 +7,8 @@ metadata:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
     external-dns.alpha.kubernetes.io/hostname: "bot.zeaz.dev,dashboard.zeaz.dev"
 spec:
   tls:

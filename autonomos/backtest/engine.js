@@ -173,7 +173,10 @@ export function maxDrawdown(equityCurve = []) {
 }
 
 export function calculateMetrics(returns = [], equityCurve = [], trades = []) {
-  const positive = returns.filter((value) => value > 0).length;
+  let positive = 0;
+  for (let i = 0; i < returns.length; i += 1) {
+    if (returns[i] > 0) positive += 1;
+  }
   const tradeStats = calculateTradeStats(trades);
   return {
     sharpe: sharpe(returns),
@@ -186,19 +189,32 @@ export function calculateMetrics(returns = [], equityCurve = [], trades = []) {
 }
 
 export function calculateTradeStats(trades = []) {
-  const sellTrades = trades.filter((trade) => trade?.type === "SELL");
-  const winningTrades = sellTrades.filter((trade) => safeNumber(trade.pnl) > 0);
-  const grossProfit = winningTrades.reduce((sum, trade) => sum + safeNumber(trade.pnl), 0);
-  const grossLoss = Math.abs(
-    sellTrades
-      .filter((trade) => safeNumber(trade.pnl) < 0)
-      .reduce((sum, trade) => sum + safeNumber(trade.pnl), 0),
-  );
+  let totalTrades = 0;
+  let winningTrades = 0;
+  let grossProfit = 0;
+  let grossLoss = 0;
+
+  for (let i = 0; i < trades.length; i += 1) {
+    const trade = trades[i];
+    if (trade?.type !== "SELL") continue;
+
+    totalTrades += 1;
+    const pnl = safeNumber(trade.pnl);
+    if (pnl > 0) {
+      winningTrades += 1;
+      grossProfit += pnl;
+      continue;
+    }
+
+    if (pnl < 0) {
+      grossLoss += Math.abs(pnl);
+    }
+  }
 
   return {
-    totalTrades: sellTrades.length,
-    winningTrades: winningTrades.length,
-    tradeWinRate: sellTrades.length ? winningTrades.length / sellTrades.length : 0,
+    totalTrades,
+    winningTrades,
+    tradeWinRate: totalTrades ? winningTrades / totalTrades : 0,
     profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0,
   };
 }

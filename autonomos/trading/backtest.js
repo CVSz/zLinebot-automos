@@ -5,7 +5,11 @@ const STARTING_BALANCE = 1000;
 const LOOKBACK_CANDLES = 60;
 
 function priceSeriesToCandles(prices = []) {
-  return prices.map((price, index) => ({ price: Number(price), time: index, rsi: 50, macd: 0 }));
+  const candles = new Array(prices.length);
+  for (let index = 0; index < prices.length; index += 1) {
+    candles[index] = { price: Number(prices[index]), time: index, rsi: 50, macd: 0 };
+  }
+  return candles;
 }
 
 export function backtest(prices, config = {}) {
@@ -20,10 +24,14 @@ export function backtest(prices, config = {}) {
   }
 
   const candles = priceSeriesToCandles(prices);
+  const rollingPrices = [];
   const wrappedStrategy = (_, state) => {
-    const start = Math.max(0, state.index - LOOKBACK_CANDLES + 1);
-    const window = prices.slice(start, state.index + 1);
-    return strategy(window, config);
+    const index = state.index;
+    rollingPrices.push(prices[index]);
+    if (rollingPrices.length > LOOKBACK_CANDLES) {
+      rollingPrices.shift();
+    }
+    return strategy(rollingPrices, config);
   };
 
   const engine = new BacktestEngine(wrappedStrategy, candles, {

@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF_NAME="$(basename "$0")"
+LOG_DIR_DEFAULT="${ROOT_DIR}/logs"
+TIMESTAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
+LOG_FILE=""
 
 PRIORITY_ORDER=(
   "ubuntu_stack_installer.sh"
@@ -14,29 +17,48 @@ PRIORITY_ORDER=(
 
 RUN_MODE="plan"
 AUTO_CONFIRM="false"
+INCLUDE_ALL_SCRIPTS="true"
 PASSTHROUGH_ARGS=()
 
 usage() {
   cat <<USAGE
 Usage:
-  bash ${SELF_NAME} [--plan|--run] [--yes] [--] [args passed to scripts]
+  bash ${SELF_NAME} [--plan|--run] [--yes] [--log-file <path>] [--priority-only] [--] [args passed to scripts]
 
 Modes:
   --plan      Inspect duplicate/overlap and print execution priority (default).
   --run       Execute scripts in priority order.
 
 Flags:
-  --yes       Skip confirmation prompt in --run mode.
-  --help      Show this help.
+  --yes             Skip confirmation prompt in --run mode.
+  --log-file PATH   Write all output to PATH (also printed to terminal).
+  --priority-only   Skip repository-wide duplicate audit and inspect only priority scripts.
+  --help            Show this help.
 
 Notes:
-- Overlap detection is heuristic: compares command signatures and key runtime actions.
+- Duplicate detection includes: exact file hash duplicates + heuristic signature overlap.
 - Any extra args after '--' are forwarded to each script while running.
 USAGE
 }
 
+setup_logging() {
+  local target_log="$1"
+
+  if [[ -z "$target_log" ]]; then
+    mkdir -p "$LOG_DIR_DEFAULT"
+    target_log="${LOG_DIR_DEFAULT}/stack-workflow-${TIMESTAMP}.log"
+  else
+    mkdir -p "$(dirname "$target_log")"
+  fi
+
+  LOG_FILE="$target_log"
+
+  # tee stdout/stderr to log file while preserving console output
+  exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
 log() { printf '[stack-manager] %s\n' "$*"; }
-warn() { printf '[stack-manager][warn] %s\n' "$*" >&2; }
+warn() { printf '[stack-manager][warn] %s\n' "$*"; }
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -51,6 +73,15 @@ parse_args() {
         ;;
       --yes)
         AUTO_CONFIRM="true"
+        shift
+        ;;
+      --log-file)
+        [[ $# -lt 2 ]] && { printf 'Missing value for --log-file\n' >&2; exit 1; }
+        LOG_FILE="$2"
+        shift 2
+        ;;
+      --priority-only)
+        INCLUDE_ALL_SCRIPTS="false"
         shift
         ;;
       -h|--help)
@@ -76,18 +107,72 @@ collect_signatures() {
   sed -E 's/#.*$//' "$script_path" \
     | tr -s '[:space:]' ' ' \
     | sed -E 's/^ +| +$//g' \
-    | rg -o '(apt(-get)? install|apt(-get)? update|docker compose|docker-ce|k3s|helm|git clone|installer/install\.sh|run-stack\.sh|systemctl|cloudflared|kubectl)' \
-    | sort -u
+    | rg -o '(apt(-get)? install|apt(-get)? update|docker compose|docker-ce|k3s|helm|git clone|installer/install\.sh|run-stack\.sh|systemctl|cloudflared|kubectl|python3? -m venv|pip(3)? install|npm (install|ci|run build)|pnpm (install|build)|yarn (install|build))' \
+    | sort -u || true
+}
+
+script_inventory() {
+  if [[ "$INCLUDE_ALL_SCRIPTS" == "true" ]]; then
+    (
+      cd "$ROOT_DIR"
+      rg --files -g '*.sh' | sort
+    )
+  else
+    printf '%s\n' "${PRIORITY_ORDER[@]}"
+  fi
+}
+
+inspect_exact_duplicates() {
+  log "Scanning for exact duplicate script files..."
+
+  local has_duplicate="false"
+  local grouped
+  grouped="$({
+    while IFS= read -r rel; do
+      [[ -f "$ROOT_DIR/$rel" ]] || continue
+      printf '%s  %s\n' "$(sha256sum "$ROOT_DIR/$rel" | awk '{print $1}')" "$rel"
+    done < <(script_inventory)
+  } | sort | awk '{print $1" "$2}')"
+
+  local current_hash=""
+  local group=()
+
+  while IFS=' ' read -r hash file; do
+    [[ -z "$hash" || -z "$file" ]] && continue
+
+    if [[ "$hash" != "$current_hash" && ${#group[@]} -gt 1 ]]; then
+      has_duplicate="true"
+      printf '  - duplicate hash %s\n' "$current_hash"
+      printf '      • %s\n' "${group[@]}"
+    fi
+
+    if [[ "$hash" != "$current_hash" ]]; then
+      current_hash="$hash"
+      group=("$file")
+    else
+      group+=("$file")
+    fi
+  done <<< "$grouped"
+
+  if [[ ${#group[@]} -gt 1 ]]; then
+    has_duplicate="true"
+    printf '  - duplicate hash %s\n' "$current_hash"
+    printf '      • %s\n' "${group[@]}"
+  fi
+
+  if [[ "$has_duplicate" == "false" ]]; then
+    log "No exact duplicate script content detected."
+  fi
 }
 
 inspect_overlap() {
   log "Inspecting duplicate/overlapping installer responsibilities..."
 
-  for script in "${PRIORITY_ORDER[@]}"; do
+  while IFS= read -r script; do
     local path="${ROOT_DIR}/${script}"
     if [[ -f "$path" ]]; then
       local sig
-      sig="$(collect_signatures "$path" || true)"
+      sig="$(collect_signatures "$path")"
       if [[ -n "$sig" ]]; then
         printf -- '- %s\n' "$script"
         while IFS= read -r line; do
@@ -99,7 +184,7 @@ inspect_overlap() {
     else
       printf -- '- %s\n    • (missing)\n' "$script"
     fi
-  done
+  done < <(script_inventory)
 }
 
 print_priority() {
@@ -135,6 +220,7 @@ execute_workflow() {
     if [[ -f "$path" ]]; then
       log "Running ${script} ..."
       bash "$path" "${PASSTHROUGH_ARGS[@]}"
+      log "Finished ${script}."
     else
       warn "${script} not found, skipping."
     fi
@@ -151,6 +237,14 @@ execute_workflow() {
 
 main() {
   parse_args "$@"
+  setup_logging "$LOG_FILE"
+
+  log "Started at $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+  log "Run mode: ${RUN_MODE}"
+  log "Priority-only audit: ${INCLUDE_ALL_SCRIPTS}"
+  log "Log file: ${LOG_FILE}"
+
+  inspect_exact_duplicates
   inspect_overlap
   print_priority
 

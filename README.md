@@ -65,6 +65,18 @@ Run the ordered workflow:
 bash stack-workflow-manager.sh --run --yes
 ```
 
+Run with audit logging to file:
+
+```bash
+bash stack-workflow-manager.sh --plan --log-file ./logs/stack-audit.log
+```
+
+Shortcut (master installer wrapper):
+
+```bash
+bash master_installer.sh --yes
+```
+
 Default priority:
 1. `ubuntu_stack_installer.sh`
 2. `install_full_stack.sh`

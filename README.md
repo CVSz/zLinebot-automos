@@ -51,6 +51,27 @@ bash ubuntu_stack_installer.sh --domain example.local --skip-deps --app-dir ./zl
 
 > In project mode, dependency installation is skipped by design. Install Docker tooling separately.
 
+## 1.1) Stack workflow manager (dedupe + ordered execution)
+
+Use the workflow manager to inspect overlapping stack responsibilities and run scripts in a safe priority order:
+
+```bash
+bash stack-workflow-manager.sh --plan
+```
+
+Run the ordered workflow:
+
+```bash
+bash stack-workflow-manager.sh --run --yes
+```
+
+Default priority:
+1. `ubuntu_stack_installer.sh`
+2. `install_full_stack.sh`
+3. `zeaz_ai_full_stack_installer.sh`
+4. `start-zLineBot-automos.sh`
+5. `one-click-deploy-config-installer-starter.sh`
+
 ## 1.5) Enterprise `codex.sh` bootstrap
 
 Generate enterprise env secrets, spin up core services (PostgreSQL/Redis/Kafka/API/Worker), and export Kubernetes templates:
@@ -149,4 +170,3 @@ Documentation: [docs/autonomos-enterprise-upgrade.md](./docs/autonomos-enterpris
 
 - Marked the top-level operator guide as reviewed during the deep-scan documentation pass.
 - Audit scope: repository-wide markdown and operational-documentation verification pass.
-

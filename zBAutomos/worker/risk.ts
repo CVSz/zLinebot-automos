@@ -1,3 +1,9 @@
 export function enforceRisk(maxPosition: number, requested: number): number {
-  return Math.min(maxPosition, requested);
+  if (maxPosition < 0) {
+    throw new Error("maxPosition must be non-negative");
+  }
+
+  if (requested > maxPosition) return maxPosition;
+  if (requested < -maxPosition) return -maxPosition;
+  return requested;
 }

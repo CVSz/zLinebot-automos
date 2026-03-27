@@ -13,12 +13,17 @@ export class TaskQueue {
     if (this.active) return;
     this.active = true;
 
-    while (this.queue.length > 0) {
-      const task = this.queue.shift();
-      if (!task) continue;
-      await task.run();
+    try {
+      while (this.queue.length > 0) {
+        const task = this.queue.shift();
+        if (!task) continue;
+        await task.run();
+      }
+    } finally {
+      this.active = false;
+      if (this.queue.length > 0) {
+        this.drain().catch(() => undefined);
+      }
     }
-
-    this.active = false;
   }
 }

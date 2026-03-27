@@ -14,6 +14,10 @@ export async function registerCopyRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "Missing subscription params" });
     }
 
+    if (plan !== "basic" && plan !== "pro") {
+      return reply.code(400).send({ error: "Invalid plan" });
+    }
+
     return {
       ok: true,
       leaderId,

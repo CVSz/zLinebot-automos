@@ -1,0 +1,35 @@
+name: Deploy Kubernetes Manifests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "k8s/**"
+      - ".github/workflows/deploy-k8s.yml"
+
+env:
+  KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+
+jobs:
+  deploy:
+    name: Apply k8s manifests
+    runs-on: ubuntu-latest
+    if: ${{ env.KUBECONFIG_DATA != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup kubeconfig
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Validate cluster connectivity
+        run: kubectl cluster-info
+
+      - name: Deploy
+        run: kubectl apply -k k8s

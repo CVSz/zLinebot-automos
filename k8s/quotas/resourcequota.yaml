@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: zlinebot-quota
+  namespace: zlinebot
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "6"
+    limits.memory: 12Gi
+    requests.storage: 80Gi
+    persistentvolumeclaims: "10"
+    pods: "40"

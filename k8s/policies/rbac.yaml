@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zlinebot-api-sa
+  namespace: zlinebot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zlinebot-worker-sa
+  namespace: zlinebot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zlinebot-scheduler-sa
+  namespace: zlinebot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zlinebot-dashboard-sa
+  namespace: zlinebot

@@ -11,6 +11,22 @@ ENV_FILE="${APP_ROOT}/.env.autonomos"
 
 log() { printf "\n[%s] %s\n" "zlinebot-autonomos" "$*"; }
 
+display_path() {
+  local file="$1"
+  python3 - "$APP_ROOT" "$file" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+root = Path(sys.argv[1]).resolve()
+path = Path(sys.argv[2]).resolve()
+try:
+    print(path.relative_to(root))
+except ValueError:
+    print(os.path.relpath(path, root))
+PY
+}
+
 ensure_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "Missing required command: $1" >&2
@@ -22,17 +38,18 @@ write_if_missing() {
   local file="$1"
   local content="$2"
   if [[ -f "$file" ]]; then
-    log "skip existing $(realpath --relative-to="$APP_ROOT" "$file")"
+    log "skip existing $(display_path "$file")"
   else
     mkdir -p "$(dirname "$file")"
     printf "%s\n" "$content" >"$file"
-    log "created $(realpath --relative-to="$APP_ROOT" "$file")"
+    log "created $(display_path "$file")"
   fi
 }
 
 main() {
   ensure_cmd node
   ensure_cmd npm
+  ensure_cmd python3
 
   log "Preparing enterprise add-on scaffold under ./autonomos"
   mkdir -p "${AUTONOMOS_DIR}"/{api,ai,memory,agents,trading,dashboard,ops}
@@ -68,6 +85,10 @@ export async function getRecentMessages(userId, limit = 10) {
   write_if_missing "${AUTONOMOS_DIR}/trading/risk.js" 'export function riskControl(balance, price) {
   const riskPerTrade = Number(process.env.RISK_PER_TRADE || 0.01);
   const stopLossPercent = Number(process.env.STOP_LOSS_PCT || 0.02);
+
+  if (!Number.isFinite(balance) || balance <= 0 || !Number.isFinite(price) || price <= 0) {
+    return { amount: 0, stopLoss: 0 };
+  }
 
   const amount = (balance * riskPerTrade) / price;
   const stopLoss = price * (1 - stopLossPercent);
@@ -121,11 +142,19 @@ import { strategy } from "./strategy.js";
 
 export async function runTradingEngine({ prices, balance, symbol = "BTCUSDT" }) {
   const action = strategy(prices);
+  if (!Array.isArray(prices) || prices.length === 0) {
+    return { mode: "simulation", action: "HOLD", amount: 0, symbol, reason: "no_prices" };
+  }
+
   const price = prices[prices.length - 1];
+  if (!Number.isFinite(price) || price <= 0) {
+    return { mode: "simulation", action: "HOLD", amount: 0, symbol, reason: "invalid_price" };
+  }
+
   const { amount } = riskControl(balance, price);
   const live = String(process.env.LIVE_TRADING || "false") === "true";
 
-  if (!live) {
+  if (!live || amount <= 0) {
     return { mode: "simulation", action, amount, symbol, price };
   }
 
@@ -149,14 +178,19 @@ const app = express();
 app.use(express.json());
 
 app.post("/webhook", async (req, res) => {
-  const user = req.body.userId || "line-user";
-  const msg = req.body.message || "hello";
+  try {
+    const user = req.body?.userId || "line-user";
+    const msg = req.body?.message || "hello";
 
-  await saveMessage(user, msg);
-  const history = await getRecentMessages(user);
+    await saveMessage(user, msg);
+    const history = await getRecentMessages(user);
 
-  const reply = await askAI(history.reverse().join("\n"));
-  return res.json({ reply });
+    const reply = await askAI(history.reverse().join("\n"));
+    return res.json({ reply });
+  } catch (error) {
+    console.error("[autonomos] webhook error", error);
+    return res.status(500).json({ error: "internal_error" });
+  }
 });
 
 const port = Number(process.env.PORT || 3300);

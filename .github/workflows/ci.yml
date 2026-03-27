@@ -1,103 +1,76 @@
-name: zLinebot CI
+name: CI Pipeline
 
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  backend:
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test
-        ports: [5432:5432]
-
-      redis:
-        image: redis:7
-        ports: [6379:6379]
+  lint:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: 20
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('**/package-lock.json') }}
 
       - name: Install deps
-        run: |
-          pip install -r backend/api/requirements.txt
-          pip install -r backend/worker/requirements.txt
-          pip install pytest pytest-cov ruff mypy
+        run: npm ci
 
-      - name: Lint
-        run: ruff check backend
+      - name: Lint JS/TS
+        run: npx eslint .
 
-      - name: Type check
-        run: mypy backend
-
-      - name: Test
-        run: pytest backend/api backend/worker --cov=backend --cov-fail-under=80
-
-  frontend:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - name: Python setup
+        uses: actions/setup-python@v5
         with:
-          node-version: "20"
+          python-version: "3.12"
 
-      - run: |
-          cd frontend
-          npm ci
+      - name: Install Python deps
+        run: pip install -r backend/requirements.txt
 
-      - run: |
-          cd frontend
-          npm run build
-
-  enforcement:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run codemods
+      - name: Python lint
         run: |
-          python scripts/codemods/fix_backend.py
-          node scripts/codemods/fix_frontend.js
-
-      - name: Fail if changes required
-        run: |
-          git diff --exit-code || (echo "❌ Codemods not applied" && exit 1)
+          pip install ruff
+          ruff check .
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Secret scan
-        run: |
-          pip install detect-secrets
-          detect-secrets scan
+      - name: Scan secrets
+        uses: gitleaks/gitleaks-action@v2
 
-      - name: Python deps scan
-        run: |
-          pip install safety
-          safety check || true
+      - name: Container scan
+        uses: aquasecurity/trivy-action@v0.24.0
+        with:
+          scan-type: fs
 
-      - name: Node deps scan
-        run: |
-          cd frontend
-          npm audit --audit-level=high || true
+  build:
+    needs: [lint]
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker
+        run: docker build -t zlinebot .

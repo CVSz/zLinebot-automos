@@ -1,0 +1,35 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${KUBECONFIG_DATA}" | base64 -d > ~/.kube/config
+
+      - name: Validate manifests
+        run: kubectl apply --dry-run=server -f k8s/
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/zlinebot -n zlinebot --timeout=180s

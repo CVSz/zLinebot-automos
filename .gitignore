@@ -1,6 +1,188 @@
+# =========================================
+# GLOBAL
+# =========================================
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# =========================================
+# ENV / SECRETS (CRITICAL)
+# =========================================
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+vault/
+*.secret
+*.credentials.json
+
+# =========================================
+# NODE / TYPESCRIPT
+# =========================================
 node_modules/
-frontend/dist/
-landing/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+dist/
+build/
+coverage/
+.next/
+out/
+
+*.tsbuildinfo
+
+# =========================================
+# PYTHON
+# =========================================
 __pycache__/
 *.pyc
-.env
+*.pyo
+*.pyd
+
+*.so
+*.egg
+*.egg-info/
+.eggs/
+
+build/
+dist/
+pip-wheel-metadata/
+
+.venv/
+venv/
+env/
+ENV/
+
+.ipynb_checkpoints/
+
+# =========================================
+# BACKTEST / AI / DATA (VERY IMPORTANT)
+# =========================================
+data/
+datasets/
+models/
+checkpoints/
+artifacts/
+logs/
+results/
+backtests/
+*.parquet
+*.csv
+*.h5
+*.pkl
+
+# =========================================
+# DOCKER
+# =========================================
+*.tar
+*.tar.gz
+docker-compose.override.yml
+
+# =========================================
+# KUBERNETES
+# =========================================
+*.kubeconfig
+kubeconfig*
+*.secret.yaml
+*.sealed.yaml
+
+# Helm
+charts/**/charts/
+charts/**/tmp/
+
+# =========================================
+# TERRAFORM / IaC
+# =========================================
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*.tfvars
+*.tfvars.json
+
+# =========================================
+# RUNNERS / CI (CRITICAL ISSUE YOU HIT)
+# =========================================
+.runners/
+.github/runners/
+actions-runner/
+runner/
+*.runner
+
+# =========================================
+# SYSTEM / SERVICE FILES
+# =========================================
+*.service
+*.socket
+*.pid
+
+# =========================================
+# CLOUDFLARE / TUNNEL
+# =========================================
+cloudflared/
+*.json
+*.yml.local
+
+# =========================================
+# LOGGING / MONITORING
+# =========================================
+prometheus-data/
+loki-data/
+grafana-data/
+
+# =========================================
+# EDITOR / IDE
+# =========================================
+.vscode/
+.idea/
+*.code-workspace
+
+# =========================================
+# TEST / COVERAGE
+# =========================================
+coverage/
+htmlcov/
+.pytest_cache/
+
+# =========================================
+# BINARIES
+# =========================================
+*.exe
+*.dll
+*.so
+*.dylib
+
+# =========================================
+# TEMP BUILD ARTIFACTS
+# =========================================
+tmp/
+temp/
+.cache/
+
+# =========================================
+# SECURITY HARDENING (EXTRA)
+# =========================================
+*.backup
+*.dump
+*.sql
+*.db
+
+# =========================================
+# OPTIONAL (UNCOMMENT IF NEEDED)
+# =========================================
+# k8s/generated/
+# helmfile.lock

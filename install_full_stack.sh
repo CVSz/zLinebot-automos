@@ -51,6 +51,17 @@ net.ipv4.ip_forward=1
 vm.max_map_count=262144
 fs.inotify.max_user_watches=524288
 EOF_SYSCTL
+
+############################
+# VMWARE + LOW RESOURCE TUNING
+############################
+cat <<'EOF_VM' >> /etc/sysctl.d/99-zlinebot-k8s.conf
+vm.swappiness=10
+vm.dirty_ratio=15
+vm.dirty_background_ratio=5
+net.core.somaxconn=65535
+EOF_VM
+
 sysctl --system
 
 ############################
@@ -140,6 +151,9 @@ K3S_SVC
 
 sed -i "s/__NODE_IP__/${NODE_IP}/" /etc/systemd/system/k3s.service
 sed -i "s/__DOMAIN__/${DOMAIN}/" /etc/systemd/system/k3s.service
+
+# K3S hardening for low-resource VM scenarios
+sed -i '/ExecStart/ s/$/ \\\n  --kubelet-arg=eviction-hard=memory.available<200Mi,nodefs.available<10% \\\n  --kubelet-arg=eviction-soft=memory.available<300Mi \\\n  --kubelet-arg=system-reserved=cpu=300m,memory=512Mi \\\n  --kubelet-arg=kube-reserved=cpu=300m,memory=512Mi \\\n  --kubelet-arg=eviction-pressure-transition-period=30s/' /etc/systemd/system/k3s.service
 
 # Explicit KMS config for secrets at rest
 mkdir -p /var/lib/rancher/k3s/server/cred
@@ -633,7 +647,10 @@ EOF_HPA
 # PROMTAIL (LOG PIPELINE)
 ############################
 helm repo add grafana https://grafana.github.io/helm-charts
-helm upgrade --install promtail grafana/promtail -n monitoring
+helm upgrade --install promtail grafana/promtail -n monitoring \
+  --set resources.requests.cpu=50m \
+  --set resources.limits.cpu=200m \
+  --set resources.limits.memory=256Mi
 
 ############################
 # KYVERNO (POLICY ENGINE)
@@ -661,6 +678,9 @@ spec:
           containers:
           - =(securityContext):
               =(privileged): "false"
+              runAsNonRoot: true
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
 EOF_POLICY
 
 ############################
@@ -683,7 +703,7 @@ kind: Namespace
 metadata:
   name: ${K8S_NAMESPACE}
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: restricted
 EOF_PSA
 
 ############################
@@ -735,6 +755,75 @@ spec:
         ingress:
           class: nginx
 EOF_ISSUER
+
+cat <<EOF_CERT | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: zlinebot-cert
+  namespace: ${K8S_NAMESPACE}
+spec:
+  secretName: zlinebot-tls
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+  dnsNames:
+  - ${DOMAIN}
+EOF_CERT
+
+############################
+# INGRESS TLS BIND
+############################
+kubectl patch ingress zlinebot -n "${K8S_NAMESPACE}" --type merge -p '{
+  "spec": {
+    "tls": [
+      {
+        "hosts": ["'"${DOMAIN}"'"],
+        "secretName": "zlinebot-tls"
+      }
+    ]
+  }
+}'
+
+############################
+# RESOURCE CONTROL (CRITICAL FOR 4C/8T)
+############################
+cat <<EOF_LIMIT_SYS | kubectl apply -f -
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit
+  namespace: kube-system
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: "200m"
+      memory: "256Mi"
+EOF_LIMIT_SYS
+
+############################
+# STORAGECLASS (VMWARE SAFE)
+############################
+cat <<EOF_SC | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-retain
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+EOF_SC
+
+############################
+# DISABLE DIRECT APPLY (ENFORCE GITOPS)
+############################
+cat <<'EOF_KUBECTL_GUARD' > /usr/local/bin/kubectl-guard
+#!/bin/bash
+echo "⚠️ Direct kubectl apply disabled. Use ArgoCD only."
+exit 1
+EOF_KUBECTL_GUARD
+chmod +x /usr/local/bin/kubectl-guard
 
 ############################
 # ARGOCD APPLICATION (REAL GITOPS)

@@ -571,6 +571,100 @@ kubectl apply --dry-run=server -f k8s/ || {
 }
 
 ############################
+# RBAC BASELINE
+############################
+cat <<EOF_RBAC | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zlinebot-sa
+  namespace: ${K8S_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zlinebot-role
+  namespace: ${K8S_NAMESPACE}
+rules:
+- apiGroups: [""]
+  resources: ["pods","services"]
+  verbs: ["get","list","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zlinebot-bind
+  namespace: ${K8S_NAMESPACE}
+subjects:
+- kind: ServiceAccount
+  name: zlinebot-sa
+roleRef:
+  kind: Role
+  name: zlinebot-role
+  apiGroup: rbac.authorization.k8s.io
+EOF_RBAC
+
+############################
+# HPA (AUTOSCALING)
+############################
+cat <<EOF_HPA | kubectl apply -f -
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zlinebot-hpa
+  namespace: ${K8S_NAMESPACE}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zlinebot
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+EOF_HPA
+
+############################
+# PROMTAIL (LOG PIPELINE)
+############################
+helm repo add grafana https://grafana.github.io/helm-charts
+helm upgrade --install promtail grafana/promtail -n monitoring
+
+############################
+# CERT-MANAGER (TLS AUTO)
+############################
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+
+############################
+# ARGOCD APPLICATION (REAL GITOPS)
+############################
+cat <<EOF_ARGO | kubectl apply -f -
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zlinebot
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: ${REPO}
+    targetRevision: HEAD
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ${K8S_NAMESPACE}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF_ARGO
+
+############################
 # GITHUB ACTION TEMPLATE
 ############################
 log "⚙️ Creating CI/CD pipeline..."

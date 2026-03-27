@@ -118,6 +118,7 @@ ExecStart=/usr/local/bin/k3s server \
   --disable traefik \
   --disable servicelb \
   --secrets-encryption \
+  --kube-apiserver-arg=encryption-provider-config=/var/lib/rancher/k3s/server/cred/encryption-config.yaml \
   --write-kubeconfig-mode 644 \
   --node-ip __NODE_IP__ \
   --tls-san __DOMAIN__
@@ -136,6 +137,26 @@ K3S_SVC
 
 sed -i "s/__NODE_IP__/${NODE_IP}/" /etc/systemd/system/k3s.service
 sed -i "s/__DOMAIN__/${DOMAIN}/" /etc/systemd/system/k3s.service
+
+# Explicit KMS config for secrets at rest
+mkdir -p /var/lib/rancher/k3s/server/cred
+if [[ ! -f /var/lib/rancher/k3s/server/cred/encryption-config.yaml ]]; then
+  ENCRYPTION_KEY="$(openssl rand -base64 32)"
+  cat > /var/lib/rancher/k3s/server/cred/encryption-config.yaml <<EOF_ENCRYPT
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+- resources:
+  - secrets
+  providers:
+  - aescbc:
+      keys:
+      - name: key1
+        secret: ${ENCRYPTION_KEY}
+  - identity: {}
+EOF_ENCRYPT
+  chmod 600 /var/lib/rancher/k3s/server/cred/encryption-config.yaml
+fi
 
 systemctl daemon-reload
 systemctl enable k3s
@@ -316,6 +337,26 @@ spec:
   policyTypes:
   - Ingress
   - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: ${K8S_NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
 EOF_NETPOL
 
 ############################
@@ -386,6 +427,20 @@ CRON_JOB="*/2 * * * * /usr/local/bin/ai-debug.sh"
 # BACKUP JOB (POSTGRES SNAPSHOT PLACEHOLDER)
 ############################
 kubectl create namespace backup --dry-run=client -o yaml | kubectl apply -f -
+cat <<EOF_BACKUP_PVC | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  namespace: backup
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+EOF_BACKUP_PVC
+
 cat <<EOF_BACKUP | kubectl apply -f -
 apiVersion: batch/v1
 kind: CronJob
@@ -399,13 +454,32 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
+          volumes:
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: backup-pvc
           containers:
           - name: backup
             image: postgres:16
             command: ["/bin/sh","-c"]
             args:
-            - pg_dump -h postgres.zlinebot.svc.cluster.local -U postgres zlinebot > /backup/zlinebot-\$(date +%F).sql
+            - |
+              : "\${POSTGRES_HOST:?missing POSTGRES_HOST}"
+              : "\${POSTGRES_DB:?missing POSTGRES_DB}"
+              : "\${POSTGRES_USER:?missing POSTGRES_USER}"
+              : "\${PGPASSWORD:?missing PGPASSWORD}"
+              mkdir -p /backup
+              pg_dump -h "\${POSTGRES_HOST}" -U "\${POSTGRES_USER}" "\${POSTGRES_DB}" > "/backup/\${POSTGRES_DB}-\$(date +%F).sql"
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /backup
             env:
+            - name: POSTGRES_HOST
+              value: postgres.${K8S_NAMESPACE}.svc.cluster.local
+            - name: POSTGRES_DB
+              value: zlinebot
+            - name: POSTGRES_USER
+              value: postgres
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
@@ -421,6 +495,26 @@ helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
 kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx
+cat <<EOF_ING | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zlinebot
+  namespace: ${K8S_NAMESPACE}
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: ${DOMAIN}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: zlinebot
+            port:
+              number: 80
+EOF_ING
 log "🛡️ Skipping host-level NGINX reverse proxy to avoid ingress strategy conflicts."
 
 ############################
@@ -451,8 +545,11 @@ jobs:
 
     - name: Deploy to k3s
       run: |
+        kubectl apply --dry-run=server -f k8s/
+        kubectl diff -f k8s/ || true
         kubectl apply -f k8s/
         kubectl rollout restart deployment/zlinebot -n ${K8S_NAMESPACE}
+        kubectl rollout status deployment/zlinebot -n ${K8S_NAMESPACE} --timeout=180s
 
 env:
   KUBECONFIG_DATA: \${{ secrets.KUBECONFIG }}

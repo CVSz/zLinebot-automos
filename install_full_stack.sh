@@ -636,9 +636,105 @@ helm repo add grafana https://grafana.github.io/helm-charts
 helm upgrade --install promtail grafana/promtail -n monitoring
 
 ############################
+# KYVERNO (POLICY ENGINE)
+############################
+helm repo add kyverno https://kyverno.github.io/kyverno/
+helm upgrade --install kyverno kyverno/kyverno -n kyverno --create-namespace
+
+cat <<EOF_POLICY | kubectl apply -f -
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: no-privileged
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Privileged containers are not allowed"
+      pattern:
+        spec:
+          containers:
+          - =(securityContext):
+              =(privileged): "false"
+EOF_POLICY
+
+############################
+# EXTERNAL DNS (CLOUDFLARE)
+############################
+helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+helm upgrade --install external-dns external-dns/external-dns \
+  -n kube-system \
+  --set provider=cloudflare \
+  --set env[0].name=CF_API_TOKEN \
+  --set env[0].valueFrom.secretKeyRef.name=cloudflare-api \
+  --set env[0].valueFrom.secretKeyRef.key=token
+
+############################
+# POD SECURITY BASELINE
+############################
+cat <<EOF_PSA | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+EOF_PSA
+
+############################
+# IMAGE POLICY (COSIGN)
+############################
+cat <<EOF_VERIFY | kubectl apply -f -
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-images
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: check-signature
+    match:
+      resources:
+        kinds:
+        - Pod
+    verifyImages:
+    - imageReferences:
+      - "*"
+      attestors:
+      - entries:
+        - keys:
+            publicKeys: |
+              -----BEGIN PUBLIC KEY-----
+              FAKEKEY
+              -----END PUBLIC KEY-----
+EOF_VERIFY
+
+############################
 # CERT-MANAGER (TLS AUTO)
 ############################
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
+
+cat <<EOF_ISSUER | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    email: ${EMAIL}
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+EOF_ISSUER
 
 ############################
 # ARGOCD APPLICATION (REAL GITOPS)

@@ -115,7 +115,6 @@ After=network.target
 [Service]
 Type=exec
 ExecStart=/usr/local/bin/k3s server --disable traefik --write-kubeconfig-mode 644 --node-ip __NODE_IP__
-ExecStart=/usr/local/bin/k3s server
 KillMode=process
 Delegate=yes
 LimitNOFILE=1048576
@@ -135,9 +134,6 @@ systemctl daemon-reload
 systemctl enable k3s
 systemctl restart k3s
 ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
-systemctl daemon-reload
-systemctl enable k3s
-systemctl restart k3s
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 until kubectl cluster-info >/dev/null 2>&1; do
@@ -166,8 +162,6 @@ if [[ -d "$APP_DIR/.git" ]]; then
 else
   git clone "$REPO" "$APP_DIR"
 fi
-log "📦 Cloning repo..."
-git clone "$REPO" "$APP_DIR" || true
 cd "$APP_DIR"
 
 ############################
@@ -196,12 +190,13 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF_CLOUDFLARED
 
-if [[ -f /etc/cloudflared/config.yml ]]; then
+if [[ -f /etc/cloudflared/config.yml && -f /etc/cloudflared/credentials.json ]]; then
   systemctl daemon-reload
   systemctl enable cloudflared
   systemctl restart cloudflared
 else
-  log "⚠️ /etc/cloudflared/config.yml not found. Cloudflared service file created but not started."
+  log "⚠️ Cloudflared config/credentials missing. Expected /etc/cloudflared/config.yml and /etc/cloudflared/credentials.json"
+  log "⚠️ Run: cloudflared tunnel login && cloudflared tunnel create zlinebot"
 fi
 
 
@@ -283,9 +278,6 @@ spec:
         cpu: "100m"
         memory: "128Mi"
 EOF_LIMIT
-helm upgrade --install prometheus prometheus-community/kube-prometheus-stack -n monitoring
-helm upgrade --install loki grafana/loki-stack -n monitoring
-helm upgrade --install vault hashicorp/vault -n vault
 
 ############################
 # LINKERD (VERIFIED BINARY)
@@ -314,7 +306,6 @@ cat <<EOF_EVENT > /usr/local/bin/event-engine.sh
 set -Eeuo pipefail
 inotifywait -m -r -e modify,create,delete "$APP_DIR" | while read -r _; do
   sleep 2
-while inotifywait -m -r -e modify,create,delete "$APP_DIR"; do
   echo "Change detected, redeploying..."
   kubectl rollout restart deployment/zlinebot -n "$K8S_NAMESPACE" || true
 done
@@ -365,9 +356,6 @@ if kubectl get pods -A --no-headers | grep -Eq 'CrashLoopBackOff|Error|ImagePull
   else
     echo "ℹ️ Pod error detected but restart cooldown is active."
   fi
-if kubectl get pods -A --no-headers | grep -Eq 'CrashLoopBackOff|Error|ImagePullBackOff'; then
-  echo "⚠️ Pod error detected, restarting deployment..."
-  kubectl rollout restart deployment/zlinebot -n zlinebot
 fi
 EOF_AI
 
@@ -387,30 +375,7 @@ helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
 kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx
-# ACCESS BASELINE (NO FAKE ZERO TRUST CLAIM)
-############################
-log "🛡️ Installing NGINX edge baseline..."
-apt-get install -y nginx apache2-utils
-
-if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" && -f "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" ]]; then
-cat <<EOF_NGINX > /etc/nginx/conf.d/edge.conf
-server {
-    listen 443 ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-
-    location / {
-        proxy_pass http://localhost:3000;
-    }
-}
-EOF_NGINX
-  nginx -t
-  systemctl restart nginx
-else
-  log "⚠️ TLS certificate for ${DOMAIN} not found. Skipping HTTPS NGINX config."
-fi
+log "🛡️ Skipping host-level NGINX reverse proxy to avoid ingress strategy conflicts."
 
 ############################
 # GITHUB ACTION TEMPLATE

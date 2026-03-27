@@ -21,12 +21,20 @@ PREVIOUS_LINK="${BASE_DIR}/previous"
 
 SERVICE="actions.runner.${RUNNER_NAME}.service"
 LOCK_FILE="/tmp/runner-v5.lock"
+TMP=""
 
 ########################################
 # UTILS
 ########################################
 fail() { echo "[❌] $1"; exit 1; }
 ok() { echo "[✅] $1"; }
+
+cleanup() {
+  rm -f "$LOCK_FILE"
+  if [[ -n "$TMP" && -d "$TMP" ]]; then
+    rm -rf "$TMP"
+  fi
+}
 
 retry() {
   local n=0
@@ -50,7 +58,7 @@ retry() {
 ########################################
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "[⚠️] Already running"; exit 0; }
-trap 'rm -f "$LOCK_FILE"' EXIT
+trap cleanup EXIT
 
 ########################################
 # VALIDATION
@@ -73,18 +81,23 @@ apt-get install -y curl jq tar git coreutils \
 id "$RUNNER_USER" &>/dev/null || useradd -m -s /bin/bash "$RUNNER_USER"
 
 chown -R "$RUNNER_USER:$RUNNER_USER" "$BASE_DIR"
-chmod -R 755 "$BASE_DIR"
+chmod -R u+rwX,go-rwx "$BASE_DIR"
 
 ########################################
 # FETCH VERSION (SAFE)
 ########################################
 echo "[+] Fetching latest runner..."
 
-API_JSON=$(retry curl -fsSL https://api.github.com/repos/actions/runner/releases/latest) \
+CURL_ARGS=(--connect-timeout 5 --max-time 30 -fsSL)
+
+API_JSON="$(retry curl "${CURL_ARGS[@]}" https://api.github.com/repos/actions/runner/releases/latest)" \
   || fail "GitHub API failed"
 
-URL=$(echo "$API_JSON" | jq -r '[.assets[] | select(.name|test("^actions-runner-linux-x64-.*\\.tar\\.gz$"))][0].browser_download_url')
-SHA_URL=$(echo "$API_JSON" | jq -r '[.assets[] | select(.name|test("sha256"))][0].browser_download_url')
+URL="$(echo "$API_JSON" \
+  | jq -er '[.assets[] | select(.name|test("^actions-runner-linux-x64-.*\\.tar\\.gz$"))][0].browser_download_url')" \
+  || fail "Runner URL parse failed"
+SHA_URL="$(echo "$API_JSON" \
+  | jq -er '[.assets[] | select(.name|test("sha256"))][0].browser_download_url' 2>/dev/null || true)"
 
 [[ -z "$URL" || "$URL" == "null" ]] && fail "Invalid runner URL"
 
@@ -99,17 +112,18 @@ if [[ ! -d "$TARGET_DIR" ]]; then
 
   TMP=$(mktemp -d)
 
-  retry curl -fsSL "$URL" -o "$TMP/runner.tar.gz" || fail "Download failed"
+  retry curl "${CURL_ARGS[@]}" "$URL" -o "$TMP/runner.tar.gz" || fail "Download failed"
 
-  SIZE=$(stat -c%s "$TMP/runner.tar.gz")
+  SIZE=$(wc -c < "$TMP/runner.tar.gz")
   [[ "$SIZE" -lt 50000000 ]] && fail "Corrupt download (too small)"
 
   echo "[DEBUG] Downloaded file:"
   file "$TMP/runner.tar.gz"
 
+  FILENAME=$(basename "$URL")
   if [[ -n "$SHA_URL" && "$SHA_URL" != "null" ]]; then
-    retry curl -fsSL "$SHA_URL" -o "$TMP/sha256.txt" || fail "Checksum download failed"
-    EXPECTED=$(grep "linux-x64.*tar.gz" "$TMP/sha256.txt" | awk '{print $1}' | head -n1)
+    retry curl "${CURL_ARGS[@]}" "$SHA_URL" -o "$TMP/sha256.txt" || fail "Checksum download failed"
+    EXPECTED=$(grep -F "$FILENAME" "$TMP/sha256.txt" | awk '{print $1}' | head -n1)
     ACTUAL=$(sha256sum "$TMP/runner.tar.gz" | awk '{print $1}')
 
     [[ -n "$EXPECTED" ]] || fail "SHA256 reference not found"
@@ -134,9 +148,7 @@ if [[ ! -d "$TARGET_DIR" ]]; then
   shopt -u nullglob
   chown -R "$RUNNER_USER:$RUNNER_USER" "$TARGET_DIR"
 
-  bash "$TARGET_DIR/bin/installdependencies.sh" || true
-
-  rm -rf "$TMP"
+  bash "$TARGET_DIR/bin/installdependencies.sh" || fail "Dependency install failed"
 fi
 
 ########################################
@@ -164,11 +176,11 @@ WORK_DIR="${BASE_DIR}/work-${RUNNER_NAME}"
 mkdir -p "$WORK_DIR"
 chown -R "$RUNNER_USER:$RUNNER_USER" "$WORK_DIR"
 
-TOKEN=$(retry curl -fsSL -X POST \
+TOKEN="$(retry curl "${CURL_ARGS[@]}" -X POST \
   -H "Authorization: token $GITHUB_PAT" \
   -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/$REPO/actions/runners/registration-token" \
-  | jq -r .token)
+  | jq -er .token)" || fail "Token fetch failed"
 
 [[ "$TOKEN" == "null" || -z "$TOKEN" ]] && fail "Token invalid"
 
@@ -189,6 +201,8 @@ export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 EOF_CONF
 fi
 
+[[ -f "$RUNNER_DIR/.runner" ]] || fail "Runner config failed"
+
 ########################################
 # SYSTEMD
 ########################################
@@ -200,8 +214,8 @@ After=network.target
 [Service]
 User=$RUNNER_USER
 WorkingDirectory=$RUNNER_DIR
-ExecStartPre=/usr/bin/test -f $RUNNER_DIR/runsvc.sh
-ExecStart=/bin/bash -c "$RUNNER_DIR/runsvc.sh"
+ExecStartPre=/usr/bin/test -f "$RUNNER_DIR/runsvc.sh"
+ExecStart=/bin/bash $RUNNER_DIR/runsvc.sh
 
 Restart=always
 RestartSec=5
@@ -229,8 +243,12 @@ if ! systemctl is-active --quiet "$SERVICE"; then
   echo "[⚠️] New runner failed → rollback"
 
   if [[ -L "$PREVIOUS_LINK" ]]; then
-    ln -sfn "$(readlink -f "$PREVIOUS_LINK")" "$ACTIVE_LINK"
+    PREV_REAL=$(readlink -f "$PREVIOUS_LINK")
+    [[ -f "$PREV_REAL/runsvc.sh" ]] || fail "Rollback target invalid"
+    ln -sfn "$PREV_REAL" "$ACTIVE_LINK"
     systemctl restart "$SERVICE"
+    sleep 3
+    systemctl is-active --quiet "$SERVICE" || fail "Rollback failed"
     ok "Rollback successful"
     exit 0
   else

@@ -16,6 +16,7 @@ Thumbs.db
 .env
 .env.*
 *.env
+!.env.example
 *.key
 *.pem
 *.crt
@@ -134,8 +135,9 @@ runner/
 # CLOUDFLARE / TUNNEL
 # =========================================
 cloudflared/
-*.json
+cloudflared/*.json
 *.yml.local
+*.yaml.local
 
 # =========================================
 # LOGGING / MONITORING

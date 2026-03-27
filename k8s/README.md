@@ -11,6 +11,8 @@ This folder is a production-oriented starting point for deploying zLineBot-Autom
 - `ingress/`: NGINX ingress + cloudflared tunnel deployment.
 - `volumes/`: standalone PVC examples.
 - `autoscaling/`: HPAs for API/worker.
+- `policies/`: service account isolation and baseline NetworkPolicy controls.
+- `quotas/`: namespace ResourceQuota guardrails.
 - `terraform/`: EKS, VPC, ECR, Route53, and Cloudflare DNS provisioning.
 
 ## Quick start
@@ -36,6 +38,7 @@ This folder is a production-oriented starting point for deploying zLineBot-Autom
    ```bash
    kubectl get pods -n zlinebot
    kubectl get ingress -n zlinebot
+   kubectl get networkpolicy,resourcequota -n zlinebot
    ```
 
 ## Notes
@@ -43,9 +46,9 @@ This folder is a production-oriented starting point for deploying zLineBot-Autom
 - Use External Secrets or AWS Secrets Manager + CSI driver for production secrets.
 - Replace `zeaz/zlinebot-*` images with your ECR repositories from Terraform outputs.
 - Validate your Cloudflare tunnel and set `CLOUDFLARE_TUNNEL_TOKEN` in `bot-secrets`.
+- The default baseline now enforces namespace-wide deny-by-default traffic and scoped allow rules for ingress, DNS, Redis, and PostgreSQL.
 
 ## Documentation Refresh — 2026-03-26 (UTC)
 
 - Revalidated Kubernetes/Terraform onboarding narrative with current manifest layout.
 - Audit scope: repository-wide markdown and operational-documentation verification pass.
-

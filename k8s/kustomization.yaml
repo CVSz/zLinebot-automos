@@ -18,6 +18,9 @@ resources:
   - ingress/cloudflare-ingress.yaml
   - ingress/cloudflare-tunnel-deployment.yaml
   - autoscaling/hpa.yaml
+  - policies/rbac.yaml
+  - policies/networkpolicy.yaml
+  - quotas/resourcequota.yaml
 patches:
   - path: vault/sidecar.yaml
     target:

@@ -20,6 +20,8 @@ spec:
       labels:
         app: api
     spec:
+      serviceAccountName: zlinebot-api-sa
+      automountServiceAccountToken: false
       containers:
         - name: api
           image: zeaz/zlinebot-api:latest

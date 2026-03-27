@@ -282,6 +282,53 @@ def test_webhook_accepts_valid_line_signature_when_secret_is_configured(tmp_path
     assert response.json()["ok"] is True
 
 
+def test_webhook_ignores_non_message_events(tmp_path: Path):
+    client = make_client(tmp_path)
+    session_data = register_and_login(client, username="eventadmin")
+    tenant_id = session_data["user"]["tenant_id"]
+
+    response = client.post(
+        f"/webhook/{tenant_id}",
+        json={
+            "events": [
+                {
+                    "type": "follow",
+                    "replyToken": "reply-token",
+                    "source": {"userId": "u-follow"},
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["processed"] == 0
+
+
+def test_webhook_ignores_empty_text_messages(tmp_path: Path):
+    client = make_client(tmp_path)
+    session_data = register_and_login(client, username="emptymsgadmin")
+    tenant_id = session_data["user"]["tenant_id"]
+
+    response = client.post(
+        f"/webhook/{tenant_id}",
+        json={
+            "events": [
+                {
+                    "type": "message",
+                    "replyToken": "reply-token",
+                    "source": {"userId": "u-empty"},
+                    "message": {"type": "text", "text": "   "},
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["processed"] == 0
+
+
 def test_import_with_default_sqlite_does_not_create_db_file(tmp_path: Path):
     api_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()

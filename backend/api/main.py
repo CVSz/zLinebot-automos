@@ -175,7 +175,8 @@ class BrandingPayload(BaseModel):
 
 
 class WebhookTextMessage(BaseModel):
-    text: str = ""
+    type: str | None = None
+    text: str | None = ""
 
 
 class WebhookSource(BaseModel):
@@ -183,9 +184,10 @@ class WebhookSource(BaseModel):
 
 
 class WebhookEvent(BaseModel):
+    type: str = "message"
     replyToken: str | None = None
     source: WebhookSource
-    message: WebhookTextMessage
+    message: WebhookTextMessage | None = None
 
 
 class WebhookPayload(BaseModel):
@@ -838,7 +840,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
         processed = 0
         for event in payload.events:
-            incoming_text = event.message.text.strip()
+            if event.type != "message" or event.message is None:
+                continue
+
+            incoming_text = clean_text(event.message.text)
+            if not incoming_text:
+                continue
+
             if not check_rate_limit(tenant, event.source.userId):
                 raise HTTPException(status_code=429, detail="rate limit exceeded")
 

@@ -10,12 +10,21 @@ source "${SCRIPT_DIR}/lib/stack.sh"
 MODE="system"
 DOMAIN=""
 CERT_EMAIL=""
-APP_DIR="/opt/zLineBot-automos"
+APP_DIR=""
 SOURCE_DIR="${REPO_ROOT}"
 INSTALL_DEPS="true"
 EXPORT_ZIP="false"
 ARCHIVE_PATH=""
 FORCE_CLEAN="false"
+
+
+require_option_value() {
+  local flag="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    die "Missing value for ${flag}"
+  fi
+}
 
 usage() {
   cat <<USAGE
@@ -39,23 +48,28 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)
-      MODE="${2:-}"
+      require_option_value "$1" "${2:-}"
+      MODE="$2"
       shift 2
       ;;
     --domain)
-      DOMAIN="${2:-}"
+      require_option_value "$1" "${2:-}"
+      DOMAIN="$2"
       shift 2
       ;;
     --cert-email)
-      CERT_EMAIL="${2:-}"
+      require_option_value "$1" "${2:-}"
+      CERT_EMAIL="$2"
       shift 2
       ;;
     --app-dir)
-      APP_DIR="${2:-}"
+      require_option_value "$1" "${2:-}"
+      APP_DIR="$2"
       shift 2
       ;;
     --source-dir)
-      SOURCE_DIR="${2:-}"
+      require_option_value "$1" "${2:-}"
+      SOURCE_DIR="$2"
       shift 2
       ;;
     --skip-deps)
@@ -67,7 +81,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --archive-path)
-      ARCHIVE_PATH="${2:-}"
+      require_option_value "$1" "${2:-}"
+      ARCHIVE_PATH="$2"
       shift 2
       ;;
     --force-clean)
@@ -88,6 +103,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 DOMAIN="$(sanitize_domain "$DOMAIN")"
+[[ -d "$SOURCE_DIR" ]] || die "Source directory does not exist: ${SOURCE_DIR}"
 SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
 
 case "$MODE" in

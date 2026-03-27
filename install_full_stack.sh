@@ -114,7 +114,13 @@ After=network.target
 
 [Service]
 Type=exec
-ExecStart=/usr/local/bin/k3s server --disable traefik --write-kubeconfig-mode 644 --node-ip __NODE_IP__
+ExecStart=/usr/local/bin/k3s server \
+  --disable traefik \
+  --disable servicelb \
+  --secrets-encryption \
+  --write-kubeconfig-mode 644 \
+  --node-ip __NODE_IP__ \
+  --tls-san __DOMAIN__
 KillMode=process
 Delegate=yes
 LimitNOFILE=1048576
@@ -129,6 +135,7 @@ WantedBy=multi-user.target
 K3S_SVC
 
 sed -i "s/__NODE_IP__/${NODE_IP}/" /etc/systemd/system/k3s.service
+sed -i "s/__DOMAIN__/${DOMAIN}/" /etc/systemd/system/k3s.service
 
 systemctl daemon-reload
 systemctl enable k3s
@@ -136,10 +143,15 @@ systemctl restart k3s
 ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+# ensure kubectl works globally
+grep -q 'KUBECONFIG=/etc/rancher/k3s/k3s.yaml' /etc/profile || echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> /etc/profile
+
 until kubectl cluster-info >/dev/null 2>&1; do
   sleep 5
   log "⏳ Waiting for k3s API..."
 done
+# basic validation
+kubectl get nodes >/dev/null
 
 ############################
 # INSTALL HELM (PINNED)
@@ -279,6 +291,33 @@ spec:
         memory: "128Mi"
 EOF_LIMIT
 
+cat <<EOF_QUOTA | kubectl apply -f -
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quota
+  namespace: ${K8S_NAMESPACE}
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+EOF_QUOTA
+
+cat <<EOF_NETPOL | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ${K8S_NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+EOF_NETPOL
+
 ############################
 # LINKERD (VERIFIED BINARY)
 ############################
@@ -299,19 +338,7 @@ kubectl label namespace "${K8S_NAMESPACE}" linkerd.io/inject=enabled --overwrite
 ############################
 # EVENT-DRIVEN SYSTEM
 ############################
-log "⚡ Setting up event-driven automation..."
-
-cat <<EOF_EVENT > /usr/local/bin/event-engine.sh
-#!/bin/bash
-set -Eeuo pipefail
-inotifywait -m -r -e modify,create,delete "$APP_DIR" | while read -r _; do
-  sleep 2
-  echo "Change detected, redeploying..."
-  kubectl rollout restart deployment/zlinebot -n "$K8S_NAMESPACE" || true
-done
-EOF_EVENT
-
-chmod +x /usr/local/bin/event-engine.sh
+log "⚠️ Event-driven deploy removed (use GitOps instead)"
 
 ############################
 # SELF-HEALING SYSTEM
@@ -340,23 +367,11 @@ systemctl restart self-heal
 ############################
 # AI AUTO DEBUG BOT
 ############################
-log "🤖 Installing AI debug bot..."
+log "⚠️ AI auto-restart disabled (unsafe in production)"
 
 cat <<'EOF_AI' > /usr/local/bin/ai-debug.sh
 #!/bin/bash
-set -Eeuo pipefail
-LAST_RUN_FILE="/tmp/ai-debug.last"
-NOW="$(date +%s)"
-LAST="$(cat "$LAST_RUN_FILE" 2>/dev/null || echo 0)"
-if kubectl get pods -A --no-headers | grep -Eq 'CrashLoopBackOff|Error|ImagePullBackOff'; then
-  if (( NOW - LAST > 300 )); then
-    echo "⚠️ Pod error detected, restarting deployment..."
-    kubectl rollout restart deployment/zlinebot -n zlinebot
-    echo "$NOW" > "$LAST_RUN_FILE"
-  else
-    echo "ℹ️ Pod error detected but restart cooldown is active."
-  fi
-fi
+exit 0
 EOF_AI
 
 chmod +x /usr/local/bin/ai-debug.sh
@@ -366,6 +381,37 @@ chmod +x /usr/local/bin/ai-debug.sh
 ############################
 CRON_JOB="*/2 * * * * /usr/local/bin/ai-debug.sh"
 (crontab -l 2>/dev/null | grep -v '/usr/local/bin/ai-debug.sh'; echo "$CRON_JOB") | crontab -
+
+############################
+# BACKUP JOB (POSTGRES SNAPSHOT PLACEHOLDER)
+############################
+kubectl create namespace backup --dry-run=client -o yaml | kubectl apply -f -
+cat <<EOF_BACKUP | kubectl apply -f -
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: backup
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: postgres:16
+            command: ["/bin/sh","-c"]
+            args:
+            - pg_dump -h postgres.zlinebot.svc.cluster.local -U postgres zlinebot > /backup/zlinebot-\$(date +%F).sql
+            env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+EOF_BACKUP
 
 ############################
 # INGRESS CONTROLLER (NO HOST NGINX BYPASS)
@@ -398,10 +444,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Setup kubeconfig
+      run: |
+        mkdir -p ~/.kube
+        echo "${KUBECONFIG_DATA}" | base64 -d > ~/.kube/config
+
     - name: Deploy to k3s
       run: |
         kubectl apply -f k8s/
         kubectl rollout restart deployment/zlinebot -n ${K8S_NAMESPACE}
+
+env:
+  KUBECONFIG_DATA: \${{ secrets.KUBECONFIG }}
 EOF_GHA
 
 ############################

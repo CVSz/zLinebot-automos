@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zlinebot
+  namespace: zlinebot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zlinebot
+  template:
+    metadata:
+      labels:
+        app: zlinebot
+    spec:
+      containers:
+      - name: zlinebot
+        image: node:20-alpine
+        command: ["node", "index.js"]
+        ports:
+        - containerPort: 3000
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"

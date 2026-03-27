@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: backup
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: postgres:16
+            command: ["/bin/sh", "-c"]
+            args:
+            - pg_dump -h postgres.zlinebot.svc.cluster.local -U postgres zlinebot > /backup/zlinebot-$(date +%F).sql
+            env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password

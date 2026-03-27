@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: zlinebot
+  namespace: zlinebot
+spec:
+  selector:
+    app: zlinebot
+  ports:
+  - port: 80
+    targetPort: 3000

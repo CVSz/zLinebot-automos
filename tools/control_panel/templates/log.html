@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ log_name }}</title>
+    <style>
+      body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1rem; }
+      .toolbar { margin-bottom: .75rem; font-family: Inter, system-ui, sans-serif; }
+      pre {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 1rem;
+        background: #111;
+        color: #f7f7f7;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <a href="{{ url_for('index') }}">← Back</a>
+      <strong style="margin-left:.5rem;">{{ log_name }}</strong>
+    </div>
+    <pre id="log-content">{{ log_text }}</pre>
+
+    <script>
+      const logContent = document.getElementById("log-content");
+      const stream = new EventSource("{{ url_for('stream_log', log_name=log_name) }}");
+
+      stream.onmessage = (event) => {
+        logContent.textContent += (logContent.textContent.endsWith("\n") ? "" : "\n") + event.data;
+        window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+      };
+
+      stream.onerror = () => {
+        stream.close();
+      };
+    </script>
+  </body>
+</html>

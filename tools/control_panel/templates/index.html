@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>zLinebot-automos Control Panel</title>
+    <style>
+      body { font-family: Inter, system-ui, sans-serif; margin: 2rem; }
+      .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+      ul { padding-left: 1.2rem; }
+      button { cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1>zLinebot-automos Control Panel</h1>
+    <p>Run prioritized installer scripts and inspect runtime logs from a single panel.</p>
+
+    <div class="card">
+      <h2>Scripts</h2>
+      {% if scripts %}
+      <ul>
+        {% for script in scripts %}
+        <li>
+          <code>{{ script }}</code>
+          <form action="{{ url_for('run_script') }}" method="post" style="display:inline; margin-left: .5rem;">
+            <input type="hidden" name="script" value="{{ script }}" />
+            <button type="submit">Run</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>No allow-listed scripts found in repository root.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Logs</h2>
+      {% if logs %}
+      <ul>
+        {% for log in logs %}
+        <li><a href="{{ url_for('view_log', log_name=log) }}">{{ log }}</a></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>No logs available yet.</p>
+      {% endif %}
+    </div>
+  </body>
+</html>

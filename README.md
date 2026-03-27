@@ -77,6 +77,18 @@ Shortcut (master installer wrapper):
 bash master_installer.sh --yes
 ```
 
+WebUI control panel (Flask + log viewer with live streaming):
+
+```bash
+cd tools/control_panel
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
+
+Then open `http://localhost:5000` to run allow-listed scripts and inspect log files under `logs/control-panel/`.
+
 Default priority:
 1. `ubuntu_stack_installer.sh`
 2. `install_full_stack.sh`

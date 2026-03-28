@@ -26,6 +26,13 @@ if [[ -z "${PROJECT_PATH}" ]]; then
   exit 1
 fi
 
+if [[ "${PROJECT_PATH}" == "~"* ]]; then
+  PROJECT_PATH="${HOME}${PROJECT_PATH:1}"
+fi
+if [[ "${PROJECT_PATH}" != /* ]]; then
+  PROJECT_PATH="$(pwd)/${PROJECT_PATH}"
+fi
+
 if [[ ! -d "${PROJECT_PATH}" ]]; then
   err "Project path does not exist: ${PROJECT_PATH}"
   exit 1
@@ -47,7 +54,24 @@ source "${PROJECT_PATH}/venv/bin/activate"
 
 log "[SETUP] Installing dependencies..."
 pip install --upgrade pip
-pip install requests pytest
+
+installed_from_requirements=0
+for req_file in \
+  "${PROJECT_PATH}/requirements.txt" \
+  "${PROJECT_PATH}/backend/api/requirements.txt" \
+  "${PROJECT_PATH}/backend/worker/requirements.txt"
+do
+  if [[ -f "${req_file}" ]]; then
+    log "[SETUP] Installing from ${req_file}..."
+    pip install -r "${req_file}"
+    installed_from_requirements=1
+  fi
+done
+
+if [[ "${installed_from_requirements}" -eq 0 ]]; then
+  log "[SETUP] No requirements.txt found in expected paths; installing fallback tooling."
+  pip install requests pytest
+fi
 
 read -r -s -p "Enter your OpenAI/Codex API Key (input hidden): " CODEX_KEY
 echo
